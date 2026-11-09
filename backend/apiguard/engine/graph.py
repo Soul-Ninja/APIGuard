@@ -1,9 +1,9 @@
 from typing import List, Dict, Any, Optional, Set, Tuple
 from collections import deque
-from app.engine.models import (
+from apiguard.engine.models import (
     Operation, GraphNode, GraphEdge, NodeType, EdgeType, Provenance
 )
-from app.engine.confidence import compute_edge_confidence
+from apiguard.engine.confidence import compute_edge_confidence
 
 class ResourceGraph:
     """

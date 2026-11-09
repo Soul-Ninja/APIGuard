@@ -1,7 +1,7 @@
 import uuid
 import json
 from typing import Dict, Any, List, Optional, Tuple, Set
-from app.engine.models import (
+from apiguard.engine.models import (
     Finding, FindingStatus, ExecutionResult, Hypothesis
 )
 
@@ -16,23 +16,24 @@ class DifferentialVerifier:
     Derived strictly from response body differential, NEVER status codes alone.
     """
     @staticmethod
-    def _extract_sensitive_values(data: Any, path: str = "") -> Dict[str, Any]:
+    def _extract_sensitive_values(data: Any, path: str = "", extra_sensitive_fields: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Recursively extracts sensitive, owner-linked key-value pairs from the control payload.
-        No hardcoded values; dynamically learned from owner payload structure.
+        Combines default sensitive key substrings with any per-resource extra substrings.
         """
         results = {}
+        all_substrings = SENSITIVE_KEY_SUBSTRINGS | {f.lower() for f in (extra_sensitive_fields or []) if f}
         if isinstance(data, dict):
             for k, v in data.items():
                 current_path = f"{path}.{k}" if path else k
                 k_lower = k.lower()
-                if any(sub in k_lower for sub in SENSITIVE_KEY_SUBSTRINGS):
+                if any(sub in k_lower for sub in all_substrings):
                     if v and not isinstance(v, (dict, list)):
                         results[current_path] = str(v)
-                results.update(DifferentialVerifier._extract_sensitive_values(v, current_path))
+                results.update(DifferentialVerifier._extract_sensitive_values(v, current_path, extra_sensitive_fields))
         elif isinstance(data, list):
             for idx, item in enumerate(data):
-                results.update(DifferentialVerifier._extract_sensitive_values(item, f"{path}[{idx}]"))
+                results.update(DifferentialVerifier._extract_sensitive_values(item, f"{path}[{idx}]", extra_sensitive_fields))
         return results
 
     @staticmethod
@@ -45,7 +46,8 @@ class DifferentialVerifier:
         owner_result: ExecutionResult,
         probe_result: ExecutionResult,
         owner_identity_id: str = "user_a",
-        probe_identity_id: str = "user_b"
+        probe_identity_id: str = "user_b",
+        sensitive_fields: Optional[List[str]] = None
     ) -> Optional[Finding]:
         # 1. Check for inconclusive execution (owner control did not succeed)
         if owner_result.status_code < 200 or owner_result.status_code >= 300 or probe_result.status_code == 0:
@@ -91,7 +93,7 @@ class DifferentialVerifier:
             )
 
         # 4. DIFFERENTIAL ANALYSIS: Derives from owner-linked values in control body
-        owner_sensitive_fields = DifferentialVerifier._extract_sensitive_values(owner_result.body)
+        owner_sensitive_fields = DifferentialVerifier._extract_sensitive_values(owner_result.body, extra_sensitive_fields=sensitive_fields)
         probe_str_body = json.dumps(probe_body) if isinstance(probe_body, (dict, list)) else str(probe_body)
 
         leaked_fields = []
@@ -111,6 +113,7 @@ class DifferentialVerifier:
             confidence = 0.50
 
         repro_curl = f"curl -X {method} '{probe_result.url}' -H 'Authorization: Bearer <USER_B_TOKEN>'"
+        producer_label = graph_path[0] if graph_path else "Setup"
 
         return Finding(
             id=f"fnd_bola_{uuid.uuid4().hex[:6]}",
@@ -133,5 +136,5 @@ class DifferentialVerifier:
                 f"3. Replay {method} {endpoint} substituting {probe_identity_id}'s bearer token.",
                 f"4. Observe HTTP 200 OK leaking owner fields: {', '.join(leaked_fields)}."
             ],
-            minimized_sequence=[f"POST /projects (Setup)", f"{method} {endpoint} (Probe)"]
+            minimized_sequence=[f"{producer_label} (Setup)", f"{method} {endpoint} (Probe)"]
         )

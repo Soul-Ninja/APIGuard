@@ -3,14 +3,14 @@ import threading
 import time
 import uvicorn
 import httpx
-from app.main import app
-from app.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
-from app.engine.executor import SafeExecutor
-from app.engine.scanner import GraphGuidedScanner
-from app.engine.baseline import BaselineScanner
-from app.engine.auth import AuthRegistry
-from app.target.data import reset_db
-from app.target.config import update_target_config
+from apiguard.main import app
+from apiguard.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
+from apiguard.engine.executor import SafeExecutor
+from apiguard.engine.scanner import GraphGuidedScanner
+from apiguard.engine.baseline import BaselineScanner
+from apiguard.engine.auth import AuthRegistry
+from apiguard.target.data import reset_db
+from apiguard.target.config import update_target_config
 
 TEST_PORT = 8124
 TEST_HOST = "127.0.0.1"

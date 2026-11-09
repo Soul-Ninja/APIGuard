@@ -1,18 +1,19 @@
 import uuid
-from typing import Dict, List, Optional
-from app.engine.models import (
-    Operation, Rule, RuleType, Hypothesis, Provenance, ExecutionResult
+from typing import Dict, List, Optional, Any
+from apiguard.engine.models import (
+    Operation, Rule, RuleType, Hypothesis, Provenance, ExecutionResult, NodeType, EdgeType
 )
-from app.engine.graph import ResourceGraph
-from app.engine.confidence import compute_hypothesis_confidence
+from apiguard.engine.graph import ResourceGraph
+from apiguard.engine.confidence import compute_hypothesis_confidence
 
 class InferenceEngine:
     """
     Infers authorization rules from empirical control observations and
     propagates candidate hypotheses across the resource dependency DAG.
     """
-    def __init__(self, graph: ResourceGraph):
+    def __init__(self, graph: ResourceGraph, target_profile: Optional[Any] = None):
         self.graph = graph
+        self.target_profile = target_profile
         self.hypotheses: Dict[str, Hypothesis] = {}  # key: operation_id
 
     def record_control_observation(
@@ -24,12 +25,29 @@ class InferenceEngine:
         """
         Inference loop:
         Owner allowed (200) + Non-owner denied (401/403/404) -> Validated owner_only rule.
+        Derives resource type and owner field dynamically from graph and profile overrides.
         """
         if owner_result.status_code == 200 and probe_result.status_code in {401, 403, 404}:
+            rtype = "Resource"
+            rname = ""
+            for edge in self.graph.edges:
+                if edge.from_node == operation_id and edge.type == EdgeType.OPERATES_ON:
+                    res_node = self.graph.nodes.get(edge.to_node)
+                    if res_node and res_node.type == NodeType.RESOURCE_TYPE:
+                        rtype = res_node.label or rtype
+                        rname = res_node.metadata.get("resource_name", "")
+                        break
+
+            owner_field = "owner_id"
+            if self.target_profile and rname:
+                override = self.target_profile.get_resource_override(rname)
+                if override and getattr(override, "owner_field", None):
+                    owner_field = override.owner_field
+
             rule = Rule(
                 rule_type=RuleType.OWNER_ONLY,
-                resource_type="Project",
-                owner_field="owner_id",
+                resource_type=rtype,
+                owner_field=owner_field,
                 target_operation_id=operation_id
             )
             hyp = Hypothesis(

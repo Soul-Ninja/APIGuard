@@ -4,7 +4,7 @@ import re
 from typing import Dict, Any, Optional, Set
 from urllib.parse import urlparse
 import httpx
-from app.engine.models import PlanStep, ExecutionResult
+from apiguard.engine.models import PlanStep, ExecutionResult
 
 class SecurityViolationError(Exception):
     pass

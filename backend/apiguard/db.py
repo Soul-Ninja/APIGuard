@@ -1,14 +1,14 @@
 import aiosqlite
 import json
+import os
 import time
 import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from app.engine.models import Finding, ScanEvent
+from apiguard.engine.models import Finding, ScanEvent
 
-# Canonical database path in repo root
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-DB_PATH = str(REPO_ROOT / "apiguard.db")
+# Working directory, not the package dir: an installed package must never write into site-packages
+DB_PATH = os.environ.get("APIGUARD_DB") or str(Path.cwd() / "apiguard.db")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:

@@ -1,6 +1,6 @@
 import pytest
-from app.engine.policy import PolicyEvaluator
-from app.engine.models import Rule, RuleType, PolicyResult
+from apiguard.engine.policy import PolicyEvaluator
+from apiguard.engine.models import Rule, RuleType, PolicyResult
 
 def test_policy_ternary_results():
     rule = Rule(rule_type=RuleType.OWNER_ONLY, resource_type="Project")

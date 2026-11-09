@@ -1,11 +1,11 @@
 from typing import List, Dict, Optional
 import httpx
-from app.engine.models import (
+from apiguard.engine.models import (
     Operation, IdentityProfile, Finding, Rule, RuleType, FindingStatus, ExecutionResult, PlanStep, Hypothesis, Provenance
 )
-from app.engine.executor import SafeExecutor
-from app.engine.policy import PolicyEvaluator, PolicyResult
-from app.engine.verifier import DifferentialVerifier
+from apiguard.engine.executor import SafeExecutor
+from apiguard.engine.policy import PolicyEvaluator, PolicyResult
+from apiguard.engine.verifier import DifferentialVerifier
 
 class BaselineScanner:
     """

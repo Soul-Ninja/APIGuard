@@ -1,6 +1,6 @@
 import pytest
-from app.engine.verifier import DifferentialVerifier
-from app.engine.models import (
+from apiguard.engine.verifier import DifferentialVerifier
+from apiguard.engine.models import (
     ExecutionResult, Hypothesis, Rule, RuleType, FindingStatus, Provenance
 )
 

@@ -1,7 +1,8 @@
 import uuid
 from typing import List, Dict, Any, Optional
-from app.engine.models import Operation, PlanStep, IdentityProfile
-from app.engine.graph import ResourceGraph
+from apiguard.engine.models import Operation, PlanStep, IdentityProfile
+from apiguard.engine.graph import ResourceGraph
+from apiguard.engine.target import build_body_from_schema
 
 class TestPlanner:
     __test__ = False
@@ -9,9 +10,10 @@ class TestPlanner:
     Builds minimal, dependency-aware owner-versus-non-owner test sequences.
     Ensures prerequisites are created as Identity A, harvested, and probed as Identity B.
     """
-    def __init__(self, graph: ResourceGraph, base_url: str = "http://localhost:8000"):
+    def __init__(self, graph: ResourceGraph, base_url: str = "http://localhost:8000", target_profile: Optional[Any] = None):
         self.graph = graph
         self.base_url = base_url.rstrip("/")
+        self.target_profile = target_profile
 
     def plan_audit_for_operation(
         self,
@@ -36,6 +38,17 @@ class TestPlanner:
 
             producer_op, path_nodes = producers[0]
 
+            segments = [s for s in producer_op.path.split("/") if s]
+            root_res = segments[0] if segments else ""
+            override = self.target_profile.get_resource_override(root_res) if self.target_profile else None
+
+            if override and override.body is not None:
+                setup_body = override.body
+            elif producer_op.request_schema:
+                setup_body = build_body_from_schema(producer_op.request_schema)
+            else:
+                setup_body = {}
+
             # Step 1: Prerequisite creation as User A
             setup_id = f"step_setup_{uuid.uuid4().hex[:6]}"
             steps.append(PlanStep(
@@ -45,12 +58,8 @@ class TestPlanner:
                 method=producer_op.method,
                 path_template=producer_op.path,
                 url=f"{self.base_url}{producer_op.path}",
-                headers={"Authorization": f"Bearer {user_a.token}"} if user_a.token else {},
-                json_body={
-                    "name": "Audit Benchmark Project",
-                    "confidential_data": "CONFIDENTIAL-AEGIS-SECRET-994",
-                    "budget": "$150,000"
-                },
+                headers=user_a.get_auth_headers(),
+                json_body=setup_body,
                 expected_status=201,
                 purpose="setup",
                 cleanup=True
@@ -65,7 +74,7 @@ class TestPlanner:
             method=target_op.method,
             path_template=target_op.path,
             url=f"{self.base_url}{target_op.path}",
-            headers={"Authorization": f"Bearer {user_a.token}"} if user_a.token else {},
+            headers=user_a.get_auth_headers(),
             expected_status=200,
             purpose="control_owner",
             cleanup=False
@@ -80,7 +89,7 @@ class TestPlanner:
             method=target_op.method,
             path_template=target_op.path,
             url=f"{self.base_url}{target_op.path}",
-            headers={"Authorization": f"Bearer {user_b.token}"} if user_b.token else {},
+            headers=user_b.get_auth_headers(),
             expected_status=403,
             purpose="probe_adversary",
             cleanup=False

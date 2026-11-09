@@ -1,0 +1,59 @@
+# APIGuard Target Profile Example
+# Use this template to configure APIGuard scans against your own API.
+# Run: apiguard scan --profile path/to/this_file.yaml
+
+# Base URL of the API under test
+base_url: "http://127.0.0.1:8000/api"
+
+# Relative or absolute path to OpenAPI 3.x specification (YAML or JSON)
+spec_path: "openapi.yaml"
+
+# Allowed hostnames for safe execution. Loopback is allowed by default.
+# Scans against unlisted hosts will be rejected immediately.
+allowed_hosts:
+  - "127.0.0.1"
+  - "localhost"
+
+# Maximum total HTTP requests permitted across this scan run
+request_budget: 30
+
+# Names of the test identities to use as the resource owner and probe attacker
+owner: "user_a"
+attacker: "user_b"
+
+# Dynamic authentication configuration (optional; omit if using pre-set static tokens)
+login:
+  path: "/auth/login"
+  body_template:
+    username: "{username}"
+    password: "{password}"
+  # Dotted JSON path to token and user identity in login response (defaults: token, user_id)
+  token_path: "access_token"
+  user_id_path: "uid"
+
+# Test identities. Secrets can reference environment variables via ${ENV_VAR}
+identities:
+  - name: "user_a"
+    role: "customer"
+    username: "alice@example.com"
+    password: "${ALICE_PASSWORD}"
+
+  - name: "user_b"
+    role: "customer"
+    username: "bob@example.com"
+    password: "${BOB_PASSWORD}"
+
+# Per-resource configuration overrides (optional)
+resources:
+  orders:
+    # Dotted path to the identifier field in setup POST response (default: "id")
+    id_path: "id"
+    # Field name that identifies the resource owner (default: "owner_id")
+    owner_field: "customer_id"
+    # Extra field name substrings considered sensitive owner data for this resource
+    sensitive_fields:
+      - "customer"
+    # Custom payload template for creating the test resource
+    body:
+      item: "Standard Widget"
+      amount: 49.99

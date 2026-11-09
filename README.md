@@ -164,7 +164,7 @@ The banner is alive: mist drifts over the ruins and water, the floating islands 
 ```
 APIGuard/
 ├── backend/
-│   ├── app/
+│   ├── apiguard/              # Python package (pip install apiguard-cli)
 │   │   ├── main.py                # FastAPI server, REST routes & SSE live scan stream
 │   │   ├── db.py                  # Async SQLite persistence (WAL mode)
 │   │   ├── engine/                # Core scanner & security analysis engine
@@ -193,8 +193,6 @@ APIGuard/
 ├── docs/                          # Architectural docs, screenshots, and demo script
 ├── scripts/                       # record_demo.py (hosted demo data), make_hero_art.py (banner art)
 ├── .github/workflows/pages.yml    # Deploys the hosted replay demo to GitHub Pages
-├── pitch.md                       # Hackathon pitch, concepts primer and judge Q&A
-├── run_prototype.bat              # One-click dual-server launcher for Windows
 └── start.bat                      # Alternative startup runner
 ```
 
@@ -211,7 +209,7 @@ cd APIGuard
 ### 2. Quick Launch (Windows)
 Double-click:
 ```bat
-run_prototype.bat
+start.bat
 ```
 This starts both the FastAPI backend (`http://127.0.0.1:8000`) and the Vite dashboard (`http://127.0.0.1:5173`) and automatically opens your default browser.
 
@@ -223,7 +221,7 @@ cd backend
 python -m venv .venv
 # Windows: .venv\Scripts\activate | Unix: source .venv/bin/activate
 pip install -r requirements.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn apiguard.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 Run backend tests:
 ```bash
@@ -240,10 +238,16 @@ Open `http://127.0.0.1:5173` in your browser.
 
 #### 3. Command line (optional)
 ```bash
-cd backend
-python -m app.engine.cli scan --dry-run   # print the plan, send nothing
-python -m app.engine.cli scan             # run the scan (add --mutations for PATCH/DELETE)
+pip install -e .          # from the repo root; installs the apiguard command
+apiguard scan --dry-run   # print the plan, send nothing
+apiguard scan             # run the scan (add --mutations for PATCH/DELETE)
+apiguard scan --profile backend/apiguard/targets/example.yaml  # scan any target API
+
+# Windows alternative (if Smart App Control blocks apiguard.exe):
+python -m apiguard scan --dry-run
+python -m apiguard scan --profile backend/apiguard/targets/example.yaml
 ```
+
 
 ---
 
@@ -260,7 +264,7 @@ Planned, not shipped. Full detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 ---
 
 ## ⚠️ Known Limitations
-1. **Demo target only:** the scanner is wired to the bundled demo API. The target URL, login flow, resource name (`Project`), owner field (`owner_id`) and create-request body are fixed. Importing another OpenAPI file changes which operations are listed, but scans still run against the demo target. Making the target configurable is the next milestone. The demo target keeps its data in memory.
+1. **Target configuration:** the CLI scans any API configured via `--profile <file.yaml>`. Profiles define `base_url`, OpenAPI spec path, host allowlist, request budget, and multi-identity login or static auth headers with `${ENV_VAR}` secret expansion. Resource types and ownership rules are dynamically derived from the OpenAPI dependency graph and profile overrides (`owner_field`, `sensitive_fields`).
 2. **Identifier scope:** the prototype extracts runtime resource identifiers primarily from path parameters (`{project_id}`); nested body-based compound keys are planned for upcoming releases.
 3. **Propagation scope:** once the main read route is seen to be owner-only, every other operation that takes an ID is tested. Propagated rules attach a hypothesis and confidence to each result; they do not yet narrow the set of routes tested.
 4. **Safe mutation gate:** mutating HTTP verbs are turned off by default to protect target data integrity. The setup step still creates one test record per scan and leaves it behind.

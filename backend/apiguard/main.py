@@ -2,39 +2,29 @@ import asyncio
 import json
 import time
 import uuid
-import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 from pathlib import Path
-from dotenv import load_dotenv
-
-# Load environment variables at startup from backend/.env or root .env
-_env_backend = Path(__file__).resolve().parent.parent / ".env"
-_env_root = Path(__file__).resolve().parent.parent.parent / ".env"
-if _env_backend.exists():
-    load_dotenv(_env_backend)
-if _env_root.exists():
-    load_dotenv(_env_root)
-load_dotenv()
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 
-from app.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
-from app.engine.graph import ResourceGraph
-from app.engine.executor import SafeExecutor
-from app.engine.scanner import GraphGuidedScanner
-from app.engine.planner import TestPlanner
-from app.engine.remediation import RemediationEngine
-from app.engine.benchmark import run_benchmark
-from app.engine.auth import AuthRegistry, DEFAULT_CREDENTIALS
-from app.engine.models import IdentityProfile, ScanEvent
-from app.target.app import target_app
-from app.target.data import reset_db
-from app.target.config import update_target_config, get_target_config
-from app.db import init_db, save_scan, save_scan_event, save_finding, get_findings, clear_db
+from apiguard.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
+from apiguard.engine.graph import ResourceGraph
+from apiguard.engine.executor import SafeExecutor
+from apiguard.engine.scanner import GraphGuidedScanner
+from apiguard.engine.planner import TestPlanner
+from apiguard.engine.remediation import RemediationEngine
+from apiguard.engine.benchmark import run_benchmark
+from apiguard.engine.auth import AuthRegistry, DEFAULT_CREDENTIALS
+from apiguard.engine.target import load_target_profile
+from apiguard.engine.models import IdentityProfile, ScanEvent
+from apiguard.target.app import target_app
+from apiguard.target.data import reset_db
+from apiguard.target.config import update_target_config, get_target_config
+from apiguard.db import init_db, save_scan, save_scan_event, save_finding, get_findings, clear_db
 
 current_spec_yaml = DEMO_SPEC_YAML
 current_graph = ResourceGraph()
@@ -114,6 +104,7 @@ class ScanTriggerInput(BaseModel):
     dry_run: bool = False
     budget: int = 30
     enable_mutations: bool = False
+    target_profile: Optional[str] = "targets/demo.yaml"
 
 @app.post("/api/scan")
 async def trigger_scan(opts: ScanTriggerInput):
@@ -139,8 +130,8 @@ async def preview_dry_run(opts: ScanTriggerInput):
     operations = parser.extract_operations()
     planner = TestPlanner(current_graph, base_url="http://127.0.0.1:8000/target")
 
-    user_a = IdentityProfile(identity_id="usr_aman_101", username="aman@acme.corp", password="mock_aman_password", role="customer", token="[DRY_RUN_AMAN_TOKEN]")
-    user_b = IdentityProfile(identity_id="usr_taaran_202", username="taaran@adversary.io", password="mock_taaran_password", role="customer", token="[DRY_RUN_TAARAN_TOKEN]")
+    user_a, user_b = (IdentityProfile(**{k: DEFAULT_CREDENTIALS[n][k] for k in ("identity_id", "username", "password", "role")},
+                                      token=f"[DRY_RUN_{n.upper()}_TOKEN]") for n in ("user_a", "user_b"))
 
     all_steps = []
     budget_allocated = opts.budget
@@ -169,87 +160,39 @@ async def preview_dry_run(opts: ScanTriggerInput):
         "budget_remaining": max(0, budget_allocated - len(planned_steps))
     }
 
+def _ev(scan_id: str, event_type: str, message: str, phase: Optional[str] = None, **data) -> ScanEvent:
+    return ScanEvent(event_id=f"ev_{uuid.uuid4().hex[:6]}", scan_id=scan_id, timestamp=time.time(),
+                     event_type=event_type, phase=phase, message=message, data=data)
+
 async def _execute_scan_task(scan_id: str, opts: ScanTriggerInput, queue: asyncio.Queue):
+    async def emit(ev: ScanEvent):
+        ev.scan_id = scan_id
+        await queue.put(ev)
+        await save_scan_event(ev)
+
     try:
-        parser = OpenAPIParser(current_spec_yaml)
-        operations = parser.extract_operations()
-        
-        # Real in-process ASGI client to communicate with /target
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as asgi_client:
-            # Dynamically authenticate via /target/auth/login
-            auth_reg = AuthRegistry("http://127.0.0.1:8000/target")
-            identities = await auth_reg.authenticate_all(client=asgi_client)
-            user_a = identities["user_a"]
-            user_b = identities["user_b"]
+        profile = load_target_profile(opts.target_profile or "targets/demo.yaml")
+        operations = OpenAPIParser(current_spec_yaml).extract_operations()
 
-            ev1 = ScanEvent(
-                event_id=f"ev_{uuid.uuid4().hex[:6]}",
-                scan_id=scan_id,
-                timestamp=time.time(),
-                event_type="log",
-                phase="A",
-                message=f"[AUTH] Successfully acquired dynamic tokens for User A ({user_a.username}) and User B ({user_b.username})"
-            )
-            await queue.put(ev1)
-            await save_scan_event(ev1)
+        # in-process ASGI client talks to the mounted /target app without a socket
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
+            identities = list((await AuthRegistry(profile).authenticate_all(client=client)).items())
+            user_a = dict(identities).get("user_a") or identities[0][1]
+            user_b = dict(identities).get("user_b") or identities[1][1]
+            await emit(_ev(scan_id, "log", f"[AUTH] Successfully acquired dynamic tokens for User A ({user_a.username}) and User B ({user_b.username})", "A"))
 
-            async def on_scan_event(ev: ScanEvent):
-                ev.scan_id = scan_id
-                await queue.put(ev)
-                await save_scan_event(ev)
-
-            executor = SafeExecutor(
-                allowed_hosts={"127.0.0.1", "localhost"},
-                total_budget=opts.budget,
-                enable_mutations=opts.enable_mutations
-            )
-            scanner = GraphGuidedScanner(executor, "http://127.0.0.1:8000/target")
-
-            findings = await scanner.run_scan(
-                operations=operations,
-                user_a=user_a,
-                user_b=user_b,
-                enable_mutations=opts.enable_mutations,
-                on_event=on_scan_event,
-                client=asgi_client
-            )
-
+            executor = SafeExecutor(allowed_hosts={"127.0.0.1", "localhost"}, total_budget=opts.budget, enable_mutations=opts.enable_mutations)
+            scanner = GraphGuidedScanner(executor, profile.base_url, target_profile=profile)
+            findings = await scanner.run_scan(operations=operations, user_a=user_a, user_b=user_b,
+                                              enable_mutations=opts.enable_mutations, on_event=emit, client=client)
             for f in findings:
                 await save_finding(scan_id, f)
-
-            ev_end = ScanEvent(
-                event_id=f"ev_{uuid.uuid4().hex[:6]}",
-                scan_id=scan_id,
-                timestamp=time.time(),
-                event_type="scan_completed",
-                phase="C",
-                message=f"[DONE] Audit finished. {len(findings)} confirmed vulnerabilities recorded.",
-                data={"findings_count": len(findings)}
-            )
-            await queue.put(ev_end)
-            await save_scan_event(ev_end)
-
+            await emit(_ev(scan_id, "scan_completed", f"[DONE] Audit finished. {len(findings)} confirmed vulnerabilities recorded.", "C", findings_count=len(findings)))
     except Exception as e:
-        ev_err = ScanEvent(
-            event_id=f"ev_{uuid.uuid4().hex[:6]}",
-            scan_id=scan_id,
-            timestamp=time.time(),
-            event_type="error",
-            message=f"[ERROR] Scan execution error: {str(e)}"
-        )
-        await queue.put(ev_err)
-        await save_scan_event(ev_err)
-        await queue.put(ScanEvent(
-            event_id=f"ev_{uuid.uuid4().hex[:6]}",
-            scan_id=scan_id,
-            timestamp=time.time(),
-            event_type="scan_completed",
-            phase="C",
-            message="[DONE] Audit aborted due to an error.",
-            data={"findings_count": 0, "aborted": True}
-        ))
+        await emit(_ev(scan_id, "error", f"[ERROR] Scan execution error: {e}"))
+        await queue.put(_ev(scan_id, "scan_completed", "[DONE] Audit aborted due to an error.", "C", findings_count=0, aborted=True))
     finally:
-        await queue.put(None)  # Sentinel to close SSE stream
+        await queue.put(None)  # sentinel closes the SSE stream
 
 @app.get("/api/scan/{scan_id}/events")
 async def stream_scan_events(scan_id: str):
@@ -309,13 +252,10 @@ def get_target_status():
 
 @app.get("/api/benchmark/latest")
 async def get_latest_benchmark():
-    """
-    Reads the stored benchmark results file without re-running or resetting live target state.
-    """
-    benchmarks_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "benchmarks", "results.json"))
-    if os.path.exists(benchmarks_path):
-        with open(benchmarks_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    """Stored benchmark results; does not re-run or reset the live target."""
+    path = Path(__file__).resolve().parents[2] / "benchmarks" / "results.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
     raise HTTPException(status_code=404, detail="No benchmark results found. Run POST /api/benchmark/run first.")
 
 @app.post("/api/benchmark/run")
@@ -325,18 +265,15 @@ async def execute_benchmark_run():
 
 @app.post("/api/remediate")
 async def remediate_vulnerability(payload: Dict[str, Any]):
-    engine = RemediationEngine()
-    return await engine.generate_remediation(payload)
+    return await RemediationEngine().generate_remediation(payload)
 
 @app.get("/api/remediate/status")
 async def get_remediation_status():
-    engine = RemediationEngine()
-    return await engine.get_status()
+    return await RemediationEngine().get_status()
 
 @app.post("/api/remediate/test")
 async def test_remediation_model():
-    engine = RemediationEngine()
-    return await engine.test_connection()
+    return await RemediationEngine().test_connection()
 
 class TargetPatchInput(BaseModel):
     patched: bool = True

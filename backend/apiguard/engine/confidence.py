@@ -7,7 +7,7 @@ and empirical observations, NOT a formal statistical probability.
 """
 
 from typing import List
-from app.engine.models import Provenance
+from apiguard.engine.models import Provenance
 
 # Base confidence values based on evidence provenance
 BASE_CONFIDENCE_MAP = {

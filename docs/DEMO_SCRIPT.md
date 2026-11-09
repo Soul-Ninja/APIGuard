@@ -1,11 +1,11 @@
 # APIGuard: Live Demo Script
 
-> A short on-stage walkthrough. For the full pitch, the concepts primer (what OpenAPI, BOLA, a DAG and so on mean) and the judge Q&A, see [`pitch.md`](../pitch.md).
+> A short on-stage walkthrough.
 
 ## Before you start
 
-1. Start the backend: `cd backend`, then `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`.
-2. Start the frontend: `cd frontend`, then `npm run dev` (or double-click `run_prototype.bat`).
+1. Start the backend: `cd backend`, then `python -m uvicorn apiguard.main:app --host 127.0.0.1 --port 8000`.
+2. Start the frontend: `cd frontend`, then `npm run dev` (or double-click `start.bat`).
 3. Open `http://127.0.0.1:5173` and click the reset icon (circular arrow) so the target and history are clean.
 4. Leave **Mutations** off for the first run.
 

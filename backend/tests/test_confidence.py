@@ -1,6 +1,6 @@
 import pytest
-from app.engine.confidence import compute_hypothesis_confidence, compute_edge_confidence
-from app.engine.models import Provenance
+from apiguard.engine.confidence import compute_hypothesis_confidence, compute_edge_confidence
+from apiguard.engine.models import Provenance
 
 def test_confidence_provenance_and_bonuses():
     # Base documented

@@ -27,11 +27,11 @@ os.environ["GEMINI_API_KEY"] = ""
 
 import httpx  # noqa: E402
 
-import app.db as db  # noqa: E402
+import apiguard.db as db  # noqa: E402
 
 db.DB_PATH = str(Path(tempfile.mkdtemp()) / "record.db")
 
-from app.main import app, refresh_current_graph  # noqa: E402
+from apiguard.main import app, refresh_current_graph  # noqa: E402
 
 OUT = ROOT / "frontend" / "src" / "demo" / "fixtures.json"
 BENCHMARKS = ROOT / "benchmarks" / "results.json"

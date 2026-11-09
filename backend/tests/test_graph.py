@@ -1,7 +1,7 @@
 import pytest
-from app.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
-from app.engine.graph import ResourceGraph
-from app.engine.models import EdgeType, NodeType
+from apiguard.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
+from apiguard.engine.graph import ResourceGraph
+from apiguard.engine.models import EdgeType, NodeType
 
 def test_graph_construction():
     parser = OpenAPIParser(DEMO_SPEC_YAML)

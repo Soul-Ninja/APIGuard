@@ -3,7 +3,7 @@ import yaml
 import json
 from typing import Dict, Any, List, Tuple
 from openapi_spec_validator import validate
-from app.engine.models import Operation
+from apiguard.engine.models import Operation
 
 DEMO_SPEC_YAML = """
 openapi: 3.0.3
@@ -254,90 +254,59 @@ components:
           type: object
 """
 
+HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+
+
 class OpenAPIParser:
-    """
-    Parses and normalizes OpenAPI 3.x specifications (YAML/JSON) with local $ref resolution.
-    """
+    """Parses OpenAPI 3.x (YAML or JSON) and resolves local $refs."""
+
     def __init__(self, raw_spec: str):
-        if raw_spec.strip().startswith("{"):
-            self.spec_dict = json.loads(raw_spec)
-        else:
-            self.spec_dict = yaml.safe_load(raw_spec)
-            
-        # Validate specification structure
+        self.spec_dict = json.loads(raw_spec) if raw_spec.strip().startswith("{") else yaml.safe_load(raw_spec)
         validate(self.spec_dict)
         self.resolved_spec = self._resolve_refs(self.spec_dict, self.spec_dict)
 
     def _resolve_refs(self, element: Any, root: Dict[str, Any]) -> Any:
         if isinstance(element, dict):
-            if "$ref" in element and isinstance(element["$ref"], str) and element["$ref"].startswith("#/"):
-                ref_path = element["$ref"][2:].split("/")
+            ref = element.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/"):
                 target = root
-                for part in ref_path:
+                for part in ref[2:].split("/"):
                     target = target.get(part, {})
-                # Resolve recursively
                 return self._resolve_refs(target, root)
             return {k: self._resolve_refs(v, root) for k, v in element.items()}
-        elif isinstance(element, list):
+        if isinstance(element, list):
             return [self._resolve_refs(item, root) for item in element]
         return element
 
+    @staticmethod
+    def _json_schema(obj: Any) -> Dict[str, Any]:
+        """The application/json schema of a requestBody or response object ({} if none)."""
+        content = obj.get("content", {}).get("application/json", {}) if isinstance(obj, dict) else {}
+        return content.get("schema", {})
+
     def extract_operations(self) -> List[Operation]:
         operations = []
-        paths = self.spec_dict.get("paths", {})
-        
-        for path_str, path_item in paths.items():
-            if not isinstance(path_item, dict):
+        for path, item in self.spec_dict.get("paths", {}).items():
+            if not isinstance(item, dict):
                 continue
-            for method, op_data in path_item.items():
-                if method.lower() not in {"get", "post", "put", "patch", "delete"}:
+            for method, op in item.items():
+                if method.lower() not in HTTP_METHODS:
                     continue
-                
-                op_id = op_data.get("operationId") or f"{method.lower()}_{re.sub(r'[^a-zA-Z0-9]', '_', path_str)}"
-                
-                # Extract path parameters
-                path_params = re.findall(r"\{([a-zA-Z0-9_]+)\}", path_str)
-                
-                # Query params from parameters list
-                query_params = []
-                for param in op_data.get("parameters", []):
-                    if isinstance(param, dict) and param.get("in") == "query":
-                        query_params.append(param.get("name"))
-                
-                # Request schema ref
-                req_ref = None
-                rb = op_data.get("requestBody", {})
-                if isinstance(rb, dict):
-                    content = rb.get("content", {}).get("application/json", {})
-                    req_ref = content.get("schema", {}).get("$ref")
-                    
-                # Response schema refs
-                res_refs = {}
-                for status_code, res_obj in op_data.get("responses", {}).items():
-                    if isinstance(res_obj, dict):
-                        content = res_obj.get("content", {}).get("application/json", {})
-                        ref = content.get("schema", {}).get("$ref")
-                        if ref:
-                            res_refs[str(status_code)] = ref
-                            
-                # Security schemes
-                security = []
-                for sec_req in op_data.get("security", []):
-                    if isinstance(sec_req, dict):
-                        security.extend(sec_req.keys())
-                        
+                op_id = op.get("operationId") or f"{method.lower()}_{re.sub(r'[^a-zA-Z0-9]', '_', path)}"
+                resolved_op = self.resolved_spec["paths"][path].get(method, {})
                 operations.append(Operation(
                     id=op_id,
                     method=method.upper(),
-                    path=path_str,
+                    path=path,
                     operation_id=op_id,
-                    path_params=path_params,
-                    query_params=query_params,
-                    request_schema_ref=req_ref,
-                    response_schema_refs=res_refs,
-                    security_schemes=security,
-                    tags=op_data.get("tags", []),
-                    summary=op_data.get("summary")
+                    path_params=re.findall(r"\{([a-zA-Z0-9_]+)\}", path),
+                    query_params=[p.get("name") for p in op.get("parameters", []) if isinstance(p, dict) and p.get("in") == "query"],
+                    request_schema_ref=self._json_schema(op.get("requestBody", {})).get("$ref"),
+                    response_schema_refs={str(code): ref for code, r in op.get("responses", {}).items()
+                                          if (ref := self._json_schema(r).get("$ref"))},
+                    security_schemes=[name for req in op.get("security", []) if isinstance(req, dict) for name in req],
+                    tags=op.get("tags", []),
+                    summary=op.get("summary"),
+                    request_schema=self._json_schema(resolved_op.get("requestBody", {})) or None,
                 ))
-                
         return operations

@@ -1,0 +1,20 @@
+base_url: "http://mock-api.local"
+spec_path: "demo_spec.yaml"
+
+identities:
+  - name: "user_a"
+    role: "customer"
+    identity_id: "usr_mock_owner"
+    headers:
+      Authorization: "Bearer token_mock_owner"
+      X-API-Key: "key-owner-123"
+  - name: "user_b"
+    role: "customer"
+    identity_id: "usr_mock_attacker"
+    headers:
+      Authorization: "Bearer token_mock_attacker"
+      X-API-Key: "key-attacker-456"
+
+resources:
+  projects:
+    id_path: "data.projectId"

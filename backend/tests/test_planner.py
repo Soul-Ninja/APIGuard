@@ -1,8 +1,8 @@
 import pytest
-from app.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
-from app.engine.graph import ResourceGraph
-from app.engine.planner import TestPlanner
-from app.engine.models import IdentityProfile
+from apiguard.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
+from apiguard.engine.graph import ResourceGraph
+from apiguard.engine.planner import TestPlanner
+from apiguard.engine.models import IdentityProfile
 
 def test_planner_sequence_and_prerequisites():
     parser = OpenAPIParser(DEMO_SPEC_YAML)

@@ -1,6 +1,6 @@
 import pytest
-from app.engine.executor import SafeExecutor, SecurityViolationError
-from app.engine.models import PlanStep
+from apiguard.engine.executor import SafeExecutor, SecurityViolationError
+from apiguard.engine.models import PlanStep
 
 def test_host_allowlist_blocking():
     executor = SafeExecutor(allowed_hosts={"localhost", "127.0.0.1"})

@@ -15,6 +15,9 @@ dist/
 .coverage
 htmlcov/
 .claude/
+.agents/
 .vscode/
 .idea/
 *.log
+build/
+*.egg-info/

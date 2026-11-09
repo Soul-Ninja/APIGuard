@@ -1,8 +1,8 @@
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
-from app.target.data import TOKEN_TO_USER, PROJECTS_STORE, SEEDED_USERS, reset_db
-from app.target.config import get_target_config
+from apiguard.target.data import TOKEN_TO_USER, PROJECTS_STORE, SEEDED_USERS, reset_db
+from apiguard.target.config import get_target_config
 
 target_app = FastAPI(title="Vulnerable Target Service", version="1.0.0")
 

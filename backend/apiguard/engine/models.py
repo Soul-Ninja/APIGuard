@@ -65,10 +65,17 @@ class Hypothesis(BaseModel):
 
 class IdentityProfile(BaseModel):
     identity_id: str
-    username: str
-    password: str
-    role: str
+    username: str = ""
+    password: str = ""
+    role: str = "customer"
     token: Optional[str] = None
+    headers: Dict[str, str] = Field(default_factory=dict)
+
+    def get_auth_headers(self) -> Dict[str, str]:
+        h = dict(self.headers) if self.headers else {}
+        if self.token and "Authorization" not in h:
+            h["Authorization"] = f"Bearer {self.token}"
+        return h
 
 class ResourceOwnership(BaseModel):
     resource_type: str
@@ -87,6 +94,7 @@ class Operation(BaseModel):
     security_schemes: List[str] = []
     tags: List[str] = []
     summary: Optional[str] = None
+    request_schema: Optional[Dict[str, Any]] = None
 
 class GraphNode(BaseModel):
     id: str
@@ -157,3 +165,13 @@ class Finding(BaseModel):
     reproduction_steps: List[str] = []
     remediation: Optional[str] = None
     minimized_sequence: List[str] = []
+
+class ResourceSkip(BaseModel):
+    resource: str
+    reason: str
+
+class ScanCoverage(BaseModel):
+    resources_found: List[str] = Field(default_factory=list)
+    resources_tested: List[str] = Field(default_factory=list)
+    skipped: List[ResourceSkip] = Field(default_factory=list)
+

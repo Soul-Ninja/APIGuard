@@ -1,5 +1,5 @@
 import pytest
-from app.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
+from apiguard.engine.spec import OpenAPIParser, DEMO_SPEC_YAML
 
 def test_parse_valid_spec():
     parser = OpenAPIParser(DEMO_SPEC_YAML)

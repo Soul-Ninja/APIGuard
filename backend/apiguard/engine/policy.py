@@ -1,5 +1,5 @@
 from typing import Optional
-from app.engine.models import Rule, RuleType, PolicyResult
+from apiguard.engine.models import Rule, RuleType, PolicyResult
 
 class PolicyEvaluator:
     """

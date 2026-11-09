@@ -1,0 +1,39 @@
+is_demo: true
+base_url: "http://127.0.0.1:8000/target"
+spec_path: "demo_spec.yaml"
+
+login:
+  path: "/auth/login"
+  body_template:
+    username: "{username}"
+    password: "{password}"
+
+identities:
+  - name: "user_a"
+    role: "customer"
+    identity_id: "usr_aman_101"
+    username: "aman@acme.corp"
+    password: "password_aman_123"
+  - name: "user_b"
+    role: "customer"
+    identity_id: "usr_taaran_202"
+    username: "taaran@adversary.io"
+    password: "password_taaran_456"
+  - name: "admin"
+    role: "admin"
+    identity_id: "usr_admin_001"
+    username: "admin@corp.internal"
+    password: "password_admin_999"
+  - name: "support"
+    role: "support"
+    identity_id: "usr_support_002"
+    username: "support@corp.internal"
+    password: "password_support_777"
+
+resources:
+  projects:
+    id_path: "id"
+    body:
+      name: "Audit Benchmark Project"
+      confidential_data: "CONFIDENTIAL-AEGIS-SECRET-994"
+      budget: "$150,000"
