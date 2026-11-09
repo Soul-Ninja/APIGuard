@@ -297,3 +297,108 @@ async def test_bfla_shape_verification_soft_200_and_empty():
         f_leak = next(f for f in findings if f.endpoint == "/admin/real_leak")
         assert f_leak.status == FindingStatus.CONFIRMED
         assert f_leak.confidence >= 0.90
+
+
+@pytest.mark.asyncio
+async def test_cli_prints_potential_findings_as_needs_review(tmp_path, capsys):
+    from unittest.mock import patch
+    from apiguard.engine.models import Finding, FindingStatus, ScanCoverage, Hypothesis, Rule, RuleType, Provenance
+    from apiguard.engine.scanner import GraphGuidedScanner
+
+    hyp = Hypothesis(
+        id="hyp_test",
+        rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type="Admin"),
+        operation_id="getLeak",
+        confidence=0.95,
+        provenance=Provenance.DOCUMENTED,
+    )
+    f_confirmed = Finding(
+        id="fnd_conf_1",
+        category="BFLA",
+        severity="HIGH",
+        endpoint="/admin/leak",
+        method="GET",
+        resource_type="Admin",
+        status=FindingStatus.CONFIRMED,
+        confidence=0.95,
+        identities={"admin": "admin", "probe": "user_b"},
+        hypothesis=hyp,
+        graph_path=["GET /admin/leak"],
+        control_evidence={},
+        probe_evidence={},
+        diff_fields=[],
+        repro_curl="curl -X GET 'http://127.0.0.1:8000/admin/leak' -H 'Authorization: Bearer <USER_B_TOKEN>'",
+    )
+    f_potential = Finding(
+        id="fnd_pot_1",
+        category="BFLA",
+        severity="LOW",
+        endpoint="/admin/soft_err",
+        method="GET",
+        resource_type="Admin",
+        status=FindingStatus.POTENTIAL,
+        confidence=0.40,
+        identities={"admin": "admin", "probe": "user_b"},
+        hypothesis=hyp,
+        graph_path=["GET /admin/soft_err"],
+        control_evidence={},
+        probe_evidence={},
+        diff_fields=[],
+        repro_curl="curl -X GET 'http://127.0.0.1:8000/admin/soft_err' -H 'Authorization: Bearer <USER_B_TOKEN>'",
+    )
+
+    spec = """
+openapi: 3.0.3
+info:
+  title: Test
+  version: 1.0.0
+paths:
+  /admin/leak:
+    get:
+      operationId: getLeak
+      tags: [admin]
+      responses:
+        '200':
+          description: OK
+"""
+    spec_file = tmp_path / "spec.yaml"
+    spec_file.write_text(spec, encoding="utf-8")
+
+    profile_content = f"""
+base_url: "http://127.0.0.1:8000"
+spec_path: "{spec_file.as_posix()}"
+allowed_hosts:
+  - "127.0.0.1"
+owner: "user_a"
+attacker: "user_b"
+admin: "admin"
+identities:
+  - name: "user_a"
+    token: "tok_a"
+  - name: "user_b"
+    token: "tok_b"
+  - name: "admin"
+    token: "tok_admin"
+"""
+    profile_file = tmp_path / "profile.yaml"
+    profile_file.write_text(profile_content, encoding="utf-8")
+
+    async def mock_run_scan(self, *args, **kwargs):
+        self.coverage = ScanCoverage(
+            admin_operations_tested=["GET /admin/leak", "GET /admin/soft_err"],
+            admin_operations_found=["GET /admin/leak", "GET /admin/soft_err"]
+        )
+        return [f_confirmed, f_potential]
+
+    with patch.object(GraphGuidedScanner, "run_scan", new=mock_run_scan):
+        exit_code = await run_cli_scan(dry_run=False, profile_path=str(profile_file))
+
+    captured = capsys.readouterr()
+    out = captured.out
+
+    assert "[!] BFLA FINDING: fnd_conf_1 — HIGH" in out
+    assert "CONFIRMED (Privilege Escalation: Attacker accessed admin function)" in out
+
+    assert "[?] NEEDS REVIEW: fnd_pot_1 — LOW" in out
+    assert "POTENTIAL (attacker got 2xx but the response differs from the admin's)" in out
+    assert "[!] BFLA FINDING: fnd_pot_1" not in out

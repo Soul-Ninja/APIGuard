@@ -232,20 +232,36 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         bfla_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BFLA"]
 
         for f in bola_findings:
-            print(f"\n[!] BOLA FINDING: {f.id} — {f.severity}")
-            print(f"    Endpoint:      {f.method} {f.endpoint}")
-            print(f"    Status:        {f.status.value.upper()} (Differential Payload Match)")
-            print(f"    Confidence:    {f.confidence}")
-            print(f"    DAG Path:      {' -> '.join(f.graph_path)}")
-            print(f"    Leaked Fields: {f.diff_fields}")
-            print(f"    Repro Curl:    {f.repro_curl}")
+            if f.status == FindingStatus.POTENTIAL:
+                print(f"\n[?] NEEDS REVIEW: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                print(f"    Status:        POTENTIAL (attacker got 2xx but no owner data leaked)")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    DAG Path:      {' -> '.join(f.graph_path)}")
+                print(f"    Leaked Fields: {f.diff_fields}")
+                print(f"    Repro Curl:    {f.repro_curl}")
+            else:
+                print(f"\n[!] BOLA FINDING: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                print(f"    Status:        {f.status.value.upper()} (Differential Payload Match)")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    DAG Path:      {' -> '.join(f.graph_path)}")
+                print(f"    Leaked Fields: {f.diff_fields}")
+                print(f"    Repro Curl:    {f.repro_curl}")
 
         for f in bfla_findings:
-            print(f"\n[!] BFLA FINDING: {f.id} — {f.severity}")
-            print(f"    Endpoint:      {f.method} {f.endpoint}")
-            print(f"    Status:        {f.status.value.upper()} (Privilege Escalation: Attacker accessed admin function)")
-            print(f"    Confidence:    {f.confidence}")
-            print(f"    Repro Curl:    {f.repro_curl}")
+            if f.status == FindingStatus.POTENTIAL:
+                print(f"\n[?] NEEDS REVIEW: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                print(f"    Status:        POTENTIAL (attacker got 2xx but the response differs from the admin's)")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    Repro Curl:    {f.repro_curl}")
+            else:
+                print(f"\n[!] BFLA FINDING: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                print(f"    Status:        {f.status.value.upper()} (Privilege Escalation: Attacker accessed admin function)")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    Repro Curl:    {f.repro_curl}")
 
     if client:
         await client.aclose()
