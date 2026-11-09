@@ -1,0 +1,11 @@
+{
+  "variant": "variant_bfla",
+  "description": "BFLA defect: missing admin role check on GET /admin/users",
+  "vulnerable_endpoints": [
+    {
+      "method": "GET",
+      "endpoint": "/admin/users",
+      "type": "bfla"
+    }
+  ]
+}

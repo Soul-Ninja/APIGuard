@@ -149,6 +149,7 @@ class ScanEvent(BaseModel):
 
 class Finding(BaseModel):
     id: str
+    category: str = "BOLA"
     endpoint: str
     method: str
     resource_type: str
@@ -174,4 +175,6 @@ class ScanCoverage(BaseModel):
     resources_found: List[str] = Field(default_factory=list)
     resources_tested: List[str] = Field(default_factory=list)
     skipped: List[ResourceSkip] = Field(default_factory=list)
+    admin_operations_found: List[str] = Field(default_factory=list)
+    admin_operations_tested: List[str] = Field(default_factory=list)
 

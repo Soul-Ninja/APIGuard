@@ -1,3 +1,4 @@
+import re
 import time
 import uuid
 from typing import List, Dict, Any, Optional, Callable, Union
@@ -11,10 +12,64 @@ from apiguard.engine.graph import ResourceGraph
 from apiguard.engine.inference import InferenceEngine
 from apiguard.engine.executor import SafeExecutor, SecurityViolationError
 from apiguard.engine.verifier import DifferentialVerifier
-from apiguard.engine.target import TargetProfile, load_target_profile, get_path, build_body_from_schema
+from apiguard.engine.target import TargetProfile, load_target_profile, get_path, build_body_from_schema, is_admin_operation
 
 DEFAULT_BASE = "http://127.0.0.1:8000/target"
 OK = lambda res: 200 <= res.status_code < 300
+
+
+def _is_error_payload(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    lower_keys = {str(k).lower() for k in data.keys()}
+    if "error" in lower_keys or "errors" in lower_keys:
+        return True
+    if "detail" in lower_keys:
+        val = str(data.get("detail", "")).lower()
+        if any(w in val for w in ["forbidden", "unauthorized", "denied", "not allowed", "invalid", "error"]):
+            return True
+    if "message" in lower_keys:
+        val = str(data.get("message", "")).lower()
+        if any(w in val for w in ["forbidden", "unauthorized", "denied", "not allowed", "invalid", "error"]):
+            return True
+    return False
+
+
+def _shape_matches(ctrl: Any, probe: Any) -> bool:
+    if ctrl is None or probe is None:
+        return False
+    if probe == {} or probe == [] or probe == "":
+        return False
+    if _is_error_payload(probe):
+        return False
+
+    # Check dict
+    if isinstance(ctrl, dict) and isinstance(probe, dict):
+        c_keys = set(ctrl.keys())
+        p_keys = set(probe.keys())
+        if not c_keys or not p_keys:
+            return False
+        shared = c_keys & p_keys
+        return (len(shared) / len(c_keys) >= 0.5) and len(shared) >= 1
+
+    # Check list
+    if isinstance(ctrl, list) and isinstance(probe, list):
+        if len(ctrl) == 0 or len(probe) == 0:
+            return False
+        c_item = ctrl[0]
+        p_item = probe[0]
+        if type(c_item) != type(p_item):
+            return False
+        if isinstance(c_item, dict) and isinstance(p_item, dict):
+            c_keys = set(c_item.keys())
+            p_keys = set(p_item.keys())
+            if not c_keys or not p_keys:
+                return False
+            shared = c_keys & p_keys
+            return (len(shared) / len(c_keys) >= 0.5) and len(shared) >= 1
+        return True
+
+    return False
 
 
 class GraphGuidedScanner:
@@ -53,10 +108,11 @@ class GraphGuidedScanner:
         except Exception:
             pass  # a broken UI callback must never abort a scan
 
-    def _step(self, sid: str, who: IdentityProfile, op: Operation, purpose: str, obj_id=None, body=None) -> PlanStep:
-        url = f"{self.base_url}{op.path}"
-        if obj_id is not None:
-            url = url.replace(f"{{{op.path_params[0]}}}", str(obj_id))
+    def _step(self, sid: str, who: IdentityProfile, op: Operation, purpose: str, obj_id=None, body=None, url: Optional[str] = None) -> PlanStep:
+        if url is None:
+            url = f"{self.base_url}{op.path}"
+            if obj_id is not None and op.path_params:
+                url = url.replace(f"{{{op.path_params[0]}}}", str(obj_id))
         return PlanStep(step_id=sid, identity_id=who.identity_id, operation_id=op.operation_id, method=op.method,
                         path_template=op.path, url=url, headers=who.get_auth_headers(), json_body=body, purpose=purpose)
 
@@ -106,7 +162,8 @@ class GraphGuidedScanner:
 
     async def run_scan(self, operations: List[Operation], user_a: IdentityProfile, user_b: IdentityProfile,
                        enable_mutations: bool = False, on_event: Optional[Callable] = None,
-                       client: Optional[httpx.AsyncClient] = None) -> List[Finding]:
+                       client: Optional[httpx.AsyncClient] = None,
+                       admin_user: Optional[IdentityProfile] = None) -> List[Finding]:
         self.graph.build_from_operations(operations)
         self.coverage = ScanCoverage()
 
@@ -145,14 +202,30 @@ class GraphGuidedScanner:
                         return True
             return False
 
+        def _is_excluded_from_bola(res_node) -> bool:
+            if _is_login_resource(res_node):
+                return True
+            rname = res_node.metadata.get("resource_name", "") or res_node.label or res_node.id
+            res_ops = [
+                self.graph.operations[e.from_node]
+                for e in self.graph.edges
+                if e.to_node == res_node.id and e.type == EdgeType.OPERATES_ON and e.from_node in self.graph.operations
+            ]
+            if not res_ops:
+                res_ops = [op for op in operations if any(s == rname for s in op.path.split("/") if s)]
+            if res_ops and all(is_admin_operation(op, self.target_profile) for op in res_ops):
+                return True
+            return False
+
         all_res_nodes = [n for n in self.graph.nodes.values() if n.type == NodeType.RESOURCE_TYPE]
-        resource_nodes = [n for n in all_res_nodes if not _is_login_resource(n)]
+        resource_nodes = [n for n in all_res_nodes if not _is_excluded_from_bola(n)]
         for res_node in resource_nodes:
             rname = res_node.metadata.get("resource_name", "") or res_node.label or res_node.id
             if rname and rname not in self.coverage.resources_found:
                 self.coverage.resources_found.append(rname)
 
         findings: List[Finding] = []
+        harvested_ids: Dict[str, str] = {}
         ex = lambda step: self._execute_and_emit(step, on_event, client)
 
         for res_node in resource_nodes:
@@ -207,6 +280,13 @@ class GraphGuidedScanner:
                 self.coverage.skipped.append(ResourceSkip(resource=name, reason=reason))
                 await self._emit(on_event, "log", f"[SKIPPED] Resource '{name}' skipped: {reason}", "A")
                 continue
+
+            harvested_ids[name.lower()] = str(obj_id)
+            harvested_ids[name.lower().rstrip("s")] = str(obj_id)
+            harvested_ids[f"{name.lower().rstrip('s')}_id"] = str(obj_id)
+            harvested_ids[f"{name.lower()}_id"] = str(obj_id)
+            if id_node and id_node.metadata.get("param_name"):
+                harvested_ids[id_node.metadata["param_name"].lower()] = str(obj_id)
 
             rtype = res_node.label or name.capitalize()
 
@@ -305,9 +385,131 @@ class GraphGuidedScanner:
                     else:
                         await self._inconclusive(on_event, op, cleanup, "C")
 
-        unique: Dict[tuple, Finding] = {}  # one finding per endpoint/method, first wins
+        # ---- Phase: BFLA (OWASP API5 - Broken Function Level Authorization) ----
+        admin_ops = [op for op in operations if is_admin_operation(op, self.target_profile)]
+        for op in admin_ops:
+            op_key = f"{op.method} {op.path}"
+            if op_key not in self.coverage.admin_operations_found:
+                self.coverage.admin_operations_found.append(op_key)
+
+        if not admin_user:
+            if admin_ops:
+                await self._emit(on_event, "log", "[BFLA] Admin identity not configured; skipping BFLA scan.", "A")
+        else:
+            for op in admin_ops:
+                op_key = f"{op.method} {op.path}"
+                is_mutation = op.method in {"POST", "PUT", "PATCH", "DELETE"}
+                if is_mutation and not enable_mutations:
+                    await self._emit(on_event, "log", f"[BFLA] Mutating admin op {op.method} {op.path} skipped (--mutations not set)", "A")
+                    continue
+
+                body = None
+                if op.request_schema:
+                    body = build_body_from_schema(op.request_schema)
+
+                # Path parameter resolution: fill from harvested ids or skip
+                resolved_url = f"{self.base_url}{op.path}"
+                missing_param = None
+                p_names = op.path_params or [p for p in re.findall(r"\{([a-zA-Z0-9_]+)\}", op.path)]
+                if p_names:
+                    for param in p_names:
+                        p_lower = param.lower()
+                        matched_id = None
+                        if p_lower in harvested_ids:
+                            matched_id = harvested_ids[p_lower]
+                        elif p_lower.endswith("_id") and p_lower[:-3] in harvested_ids:
+                            matched_id = harvested_ids[p_lower[:-3]]
+                        elif p_lower in {"id", "pk"}:
+                            segments = [s.lower().strip("{}") for s in op.path.split("/") if s and s != f"{{{param}}}"]
+                            for seg in segments:
+                                if seg in {"admin", "api", "v1", "v2", "v3"}:
+                                    continue
+                                if seg in harvested_ids:
+                                    matched_id = harvested_ids[seg]
+                                    break
+                                if seg.rstrip("s") in harvested_ids:
+                                    matched_id = harvested_ids[seg.rstrip("s")]
+                                    break
+                                if f"{seg}_id" in harvested_ids:
+                                    matched_id = harvested_ids[f"{seg}_id"]
+                                    break
+                                if f"{seg.rstrip('s')}_id" in harvested_ids:
+                                    matched_id = harvested_ids[f"{seg.rstrip('s')}_id"]
+                                    break
+                        if matched_id is not None:
+                            resolved_url = resolved_url.replace(f"{{{param}}}", str(matched_id))
+                        else:
+                            missing_param = param
+                            break
+
+                if missing_param is not None:
+                    reason = f"needs path parameter {missing_param}"
+                    self.coverage.skipped.append(ResourceSkip(resource=f"{op.method} {op.path}", reason=reason))
+                    await self._emit(on_event, "log", f"[SKIPPED] Admin op '{op.method} {op.path}' skipped: {reason}", "A")
+                    continue
+
+                # Control step: call as admin
+                ctrl_step = self._step(f"bfla_ctrl_{op.operation_id}", admin_user, op, "control_admin", body=body, url=resolved_url)
+                ctrl_res = await ex(ctrl_step)
+
+                if not (200 <= ctrl_res.status_code < 300):
+                    reason = f"admin control call returned HTTP {ctrl_res.status_code}" if ctrl_res.status_code > 0 else f"admin control call connection error: {ctrl_res.error or 'unreachable'}"
+                    self.coverage.skipped.append(ResourceSkip(resource=f"{op.method} {op.path}", reason=reason))
+                    await self._inconclusive(on_event, op, ctrl_res, "A")
+                    continue
+
+                # Probe step: call as attacker (user_b)
+                probe_step = self._step(f"bfla_probe_{op.operation_id}", user_b, op, "probe_adversary", body=body, url=resolved_url)
+                probe_res = await ex(probe_step)
+
+                if op_key not in self.coverage.admin_operations_tested:
+                    self.coverage.admin_operations_tested.append(op_key)
+
+                if 200 <= probe_res.status_code < 300:
+                    is_match = _shape_matches(ctrl_res.body, probe_res.body)
+                    auth_h = "-H 'Authorization: Bearer <USER_B_TOKEN>'" if user_b.token else ""
+                    repro = f"curl -X {op.method} '{probe_step.url}' {auth_h}".strip()
+                    status = FindingStatus.CONFIRMED if is_match else FindingStatus.POTENTIAL
+                    confidence = 0.95 if is_match else 0.40
+                    severity = "HIGH" if is_match else "LOW"
+                    f = Finding(
+                        id=f"fnd_bfla_{uuid.uuid4().hex[:6]}",
+                        category="BFLA",
+                        severity=severity,
+                        endpoint=op.path,
+                        method=op.method,
+                        resource_type="Admin",
+                        status=status,
+                        confidence=confidence,
+                        identities={"admin": admin_user.identity_id, "probe": user_b.identity_id},
+                        hypothesis=Hypothesis(
+                            id=f"hyp_bfla_{op.operation_id}",
+                            rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type="Admin", owner_field="role"),
+                            operation_id=op.operation_id,
+                            confidence=confidence,
+                            provenance=Provenance.DOCUMENTED
+                        ),
+                        graph_path=[f"{op.method} {op.path} (BFLA: Admin Function Exposed)"],
+                        control_evidence={"status_code": ctrl_res.status_code, "body": ctrl_res.body},
+                        probe_evidence={"status_code": probe_res.status_code, "body": probe_res.body},
+                        diff_fields=[],
+                        repro_curl=repro,
+                        reproduction_steps=[
+                            f"1. Authenticate as admin user ({admin_user.identity_id}) and call {op.method} {op.path} -> HTTP {ctrl_res.status_code}",
+                            f"2. Authenticate as non-admin attacker ({user_b.identity_id}) with bearer token <USER_B_TOKEN> and call {op.method} {op.path} -> HTTP {probe_res.status_code}"
+                        ]
+                    )
+                    findings.append(f)
+                    if is_match:
+                        await self._confirm(on_event, f, f"BFLA on {op.method} {op.path}")
+                    else:
+                        await self._emit(on_event, "log", f"[POTENTIAL] BFLA on {op.method} {op.path}: probe returned 2xx but body shape differed or indicated error", "C", f.model_dump())
+                elif probe_res.status_code in {401, 403, 404}:
+                    await self._denied(on_event, op, probe_res, "B", f"[BFLA] Probe denied with HTTP {probe_res.status_code} (Secure)")
+
+        unique: Dict[tuple, Finding] = {}  # one finding per category/method/endpoint, first wins
         for f in findings:
-            unique.setdefault((f.method, f.endpoint), f)
+            unique.setdefault((getattr(f, "category", "BOLA"), f.method, f.endpoint), f)
         return list(unique.values())
 
     async def _minimize_and_store(self, finding: Finding, setup: PlanStep, probe: PlanStep, client, id_path: str = "id"):
@@ -350,6 +552,9 @@ async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.
             raise ValueError(f"TargetProfile must define owner '{owner_name}' and attacker '{attacker_name}' identities")
         user_a, user_b = pair[0], pair[1]
 
+    admin_name = getattr(profile, "admin", "admin")
+    admin_user = identities.get(admin_name) if admin_name else None
+
     scanner = GraphGuidedScanner(executor=executor, base_url=profile.base_url, target_profile=profile)
     return await scanner.run_scan(operations=profile.load_operations() if operations is None else operations, user_a=user_a, user_b=user_b,
-                                  enable_mutations=enable_mutations, on_event=on_event, client=client)
+                                  admin_user=admin_user, enable_mutations=enable_mutations, on_event=on_event, client=client)

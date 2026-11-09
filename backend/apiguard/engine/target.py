@@ -1,5 +1,6 @@
 import os
 import re
+import fnmatch
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 import yaml
@@ -146,6 +147,8 @@ class TargetProfile(BaseModel):
     identities: List[IdentityConfig] = Field(default_factory=list)
     login: Optional[LoginConfig] = None
     resources: Dict[str, ResourceOverride] = Field(default_factory=dict)
+    admin_operations: List[str] = Field(default_factory=list)
+    admin: Optional[str] = "admin"
     allowed_hosts: List[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost"])
     request_budget: int = 30
     owner: str = "user_a"
@@ -213,3 +216,43 @@ def load_target_profile(path_or_obj: Union[str, Path, TargetProfile, Dict[str, A
         d["is_demo"] = False
         return TargetProfile(**d)
     return TargetProfile.from_yaml(path_or_obj)
+
+
+def is_admin_operation(op: Any, profile: Optional[TargetProfile] = None) -> bool:
+    """
+    Determines if an OpenAPI operation is admin-only (OWASP API5 - BFLA):
+    1. Listed in profile.admin_operations (as operationIds or "METHOD /path" globs, or path globs)
+    2. Path contains an /admin segment
+    3. Operation has the OpenAPI tag "admin"
+    """
+    # Rule 1: TargetProfile admin_operations
+    if profile and profile.admin_operations:
+        op_id = getattr(op, "operation_id", "") or ""
+        method = getattr(op, "method", "") or ""
+        path = getattr(op, "path", "") or ""
+        method_path = f"{method} {path}"
+
+        for pattern in profile.admin_operations:
+            p = pattern.strip()
+            # Match operation_id (exact or glob)
+            if op_id and (p == op_id or fnmatch.fnmatch(op_id.lower(), p.lower())):
+                return True
+            # Match "METHOD /path" glob
+            if fnmatch.fnmatch(method_path.lower(), p.lower()):
+                return True
+            # Match path glob if pattern starts with /
+            if p.startswith("/") and fnmatch.fnmatch(path.lower(), p.lower()):
+                return True
+
+    # Rule 2: Path has an /admin segment
+    path = getattr(op, "path", "") or ""
+    segments = [s.lower() for s in path.split("/") if s]
+    if "admin" in segments:
+        return True
+
+    # Rule 3: OpenAPI tag "admin"
+    tags = getattr(op, "tags", []) or []
+    if any(t.lower() == "admin" for t in tags):
+        return True
+
+    return False

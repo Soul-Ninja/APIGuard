@@ -9,7 +9,7 @@ from apiguard.engine.planner import TestPlanner
 from apiguard.engine.executor import SafeExecutor
 from apiguard.engine.scanner import GraphGuidedScanner
 from apiguard.engine.auth import AuthRegistry
-from apiguard.engine.target import load_target_profile, TargetProfile
+from apiguard.engine.target import load_target_profile, TargetProfile, is_admin_operation
 from apiguard.engine.models import FindingStatus, IdentityProfile
 from apiguard.target.data import reset_db
 from apiguard.target.config import update_target_config
@@ -94,15 +94,37 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
 
         user_a = identities[owner_name]
         user_b = identities[attacker_name]
-        print(f"[*] Dry-run identities: Owner ({user_a.username}), Attacker ({user_b.username})")
+        admin_name = getattr(profile, "admin", "admin")
+        admin_user = identities.get(admin_name) if admin_name else None
+
+        if admin_user:
+            print(f"[*] Dry-run identities: Owner ({user_a.username}), Attacker ({user_b.username}), Admin ({admin_user.username})")
+        else:
+            print(f"[*] Dry-run identities: Owner ({user_a.username}), Attacker ({user_b.username})")
+            if admin_name:
+                print(f"[*] Admin identity '{admin_name}' not found; skipping BFLA scan.")
+
+        bola_ops = [op for op in operations if not is_admin_operation(op, profile)]
+        admin_ops = [op for op in operations if is_admin_operation(op, profile)]
 
         planner = TestPlanner(graph, target_url, target_profile=profile)
-        for op in operations:
+        for op in bola_ops:
             steps = planner.plan_audit_for_operation(op, user_a, user_b, enable_mutations=enable_mutations)
             if steps:
                 print(f"\nPlanned sequence for {op.method} {op.path}:")
                 for s in steps:
                     print(f"  - [{s.purpose}] {s.method} {s.url} (Identity: {s.identity_id})")
+
+        if admin_user and admin_ops:
+            print("\n" + "=" * 65)
+            print("  BFLA PRIVILEGE ESCALATION CHECKS (Admin Operations)")
+            print("=" * 65)
+            for op in admin_ops:
+                url = f"{target_url}{op.path}"
+                print(f"\nPlanned BFLA sequence for {op.method} {op.path}:")
+                print(f"  - [control_admin] {op.method} {url} (Identity: {admin_user.identity_id})")
+                print(f"  - [probe_adversary] {op.method} {url} (Identity: {user_b.identity_id})")
+
         print("\n[SUCCESS] Dry-run completed. All prerequisite paths validated.")
         return 0
 
@@ -164,19 +186,27 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
 
     user_a = identities[owner_name]
     user_b = identities[attacker_name]
-    print(f"[*] Dynamic login verified: Owner ({user_a.username}), Attacker ({user_b.username})")
+    admin_name = getattr(profile, "admin", "admin")
+    admin_user = identities.get(admin_name) if admin_name else None
+
+    if admin_user:
+        print(f"[*] Dynamic login verified: Owner ({user_a.username}), Attacker ({user_b.username}), Admin ({admin_user.username})")
+    else:
+        print(f"[*] Dynamic login verified: Owner ({user_a.username}), Attacker ({user_b.username})")
+        if admin_name:
+            print(f"[*] Admin identity '{admin_name}' not found; skipping BFLA scan.")
 
     print("\n[*] Initiating Dual-Token Graph Execution...")
     if profile.is_demo:
         reset_db()
-        update_target_config(defect_a=False, defect_b=True, defect_c=False, patched_mode=False)
+        update_target_config(defect_a=False, defect_b=True, defect_c=False, defect_bfla=False, patched_mode=False)
 
     executor = SafeExecutor(allowed_hosts=set(profile.allowed_hosts), total_budget=profile.request_budget, enable_mutations=enable_mutations)
     scanner = GraphGuidedScanner(executor, target_url, target_profile=profile)
 
     t0 = asyncio.get_event_loop().time()
     try:
-        findings = await scanner.run_scan(operations, user_a, user_b, enable_mutations=enable_mutations, client=client)
+        findings = await scanner.run_scan(operations, user_a, user_b, admin_user=admin_user, enable_mutations=enable_mutations, client=client)
     except Exception as e:
         print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
         if client:
@@ -185,20 +215,36 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
     duration_ms = round((asyncio.get_event_loop().time() - t0) * 1000, 1)
 
     coverage = getattr(scanner, "coverage", None)
-    zero_tested = (coverage is not None and len(coverage.resources_tested) == 0)
+    zero_tested = (
+        coverage is not None
+        and len(coverage.resources_tested) == 0
+        and len(coverage.admin_operations_tested) == 0
+    )
+
+    confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
 
     if not zero_tested:
         print("\n" + "=" * 65)
-        print(f"  AUDIT COMPLETE: {len(findings)} CONFIRMED VULNERABILITIES ({duration_ms}ms)")
+        print(f"  AUDIT COMPLETE: {len(confirmed_findings)} CONFIRMED VULNERABILITIES ({duration_ms}ms)")
         print("=" * 65)
 
-        for f in findings:
-            print(f"\n[!] FINDING: {f.id} — {f.severity}")
+        bola_findings = [f for f in findings if getattr(f, "category", "BOLA") != "BFLA"]
+        bfla_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BFLA"]
+
+        for f in bola_findings:
+            print(f"\n[!] BOLA FINDING: {f.id} — {f.severity}")
             print(f"    Endpoint:      {f.method} {f.endpoint}")
             print(f"    Status:        {f.status.value.upper()} (Differential Payload Match)")
             print(f"    Confidence:    {f.confidence}")
             print(f"    DAG Path:      {' -> '.join(f.graph_path)}")
             print(f"    Leaked Fields: {f.diff_fields}")
+            print(f"    Repro Curl:    {f.repro_curl}")
+
+        for f in bfla_findings:
+            print(f"\n[!] BFLA FINDING: {f.id} — {f.severity}")
+            print(f"    Endpoint:      {f.method} {f.endpoint}")
+            print(f"    Status:        {f.status.value.upper()} (Privilege Escalation: Attacker accessed admin function)")
+            print(f"    Confidence:    {f.confidence}")
             print(f"    Repro Curl:    {f.repro_curl}")
 
     if client:
@@ -208,6 +254,8 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         for skip in coverage.skipped:
             print(f"[-] Skipped resource '{skip.resource}': {skip.reason}")
         print(f"[*] Coverage: Tested {len(coverage.resources_tested)} of {len(coverage.resources_found)} resources.")
+        if coverage.admin_operations_found:
+            print(f"[*] BFLA Coverage: Tested {len(coverage.admin_operations_tested)} of {len(coverage.admin_operations_found)} admin operations.")
 
     confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
     if len(confirmed_findings) > 0:

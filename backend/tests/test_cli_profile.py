@@ -59,6 +59,12 @@ def get_order(order_id: str, authorization: str = Header(None)):
     return orders_db[order_id]
 
 
+@orders_app.get("/admin/orders")
+def get_admin_orders(authorization: str = Header(None)):
+    # Deliberate BFLA: normal customer callers can access admin order inventory
+    return list(orders_db.values())
+
+
 AUTH401_PORT = 8127
 auth401_app = FastAPI()
 
@@ -154,6 +160,16 @@ paths:
           required: true
           schema:
             type: string
+      responses:
+        '200':
+          description: OK
+  /admin/orders:
+    get:
+      operationId: getAdminOrders
+      tags:
+        - admin
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: OK
@@ -255,6 +271,68 @@ resources:
     assert "Skipped resource 'auth'" not in combined_output
     assert "'auth'" not in combined_output
     assert "Tested 1 of 1 resources" in combined_output
+
+
+@pytest.mark.asyncio
+async def test_orders_custom_target_bfla_found(tmp_path, orders_server, capsys):
+    """
+    Proves BFLA detection works on non-demo targets:
+    Orders API with an /admin/orders route and configured admin identity confirms BFLA.
+    """
+    spec_file = tmp_path / "orders_spec.yaml"
+    spec_file.write_text(ORDERS_SPEC, encoding="utf-8")
+
+    profile_content = f"""
+base_url: "{orders_server}"
+spec_path: "{spec_file.as_posix()}"
+allowed_hosts:
+  - "127.0.0.1"
+  - "localhost"
+request_budget: 30
+owner: "customer_a"
+attacker: "customer_b"
+admin: "admin"
+login:
+  path: "/auth/login"
+  body_template:
+    username: "{{username}}"
+    password: "{{password}}"
+  token_path: "access_token"
+  user_id_path: "uid"
+identities:
+  - name: "customer_a"
+    username: "alice@orders.test"
+    password: "pwd"
+  - name: "customer_b"
+    username: "bob@orders.test"
+    password: "pwd"
+  - name: "admin"
+    username: "admin@orders.test"
+    password: "pwd"
+resources:
+  orders:
+    id_path: "id"
+    owner_field: "customer_id"
+    sensitive_fields:
+      - "customer"
+"""
+    profile_file = tmp_path / "orders_bfla_profile.yaml"
+    profile_file.write_text(profile_content, encoding="utf-8")
+
+    profile = load_target_profile(str(profile_file))
+    findings = await scan_target(target_profile=profile)
+    bfla_findings = [f for f in findings if getattr(f, "category", "") == "BFLA"]
+    assert len(bfla_findings) == 1
+    assert bfla_findings[0].endpoint == "/admin/orders"
+    assert bfla_findings[0].severity == "HIGH"
+    assert bfla_findings[0].status.value == "confirmed"
+
+    exit_code = await run_cli_scan(dry_run=False, profile_path=str(profile_file))
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    assert "[!] BFLA FINDING:" in captured.out
+    assert "BFLA Coverage: Tested 1 of 1 admin operations" in captured.out
 
 
 @pytest.mark.asyncio

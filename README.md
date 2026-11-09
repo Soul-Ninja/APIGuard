@@ -73,6 +73,7 @@ Every metric below was measured by running both scanners against the bundled dem
 | **Variant C** | Mutation BOLA on update (`PATCH /projects/{id}`) | 1 | 100% (1/1) | 7 | **100% (1/1)** | 15 | 11.8 ms |
 | **Variant All** | Compound multi-defect scenario (A + B + C) | 3 | 67% (2/3) | 7 | **100% (3/3)** | 19 | 5.4 ms |
 | **Variant Secure** | Fully patched target + verifier traps | 0 | n/a (0 FP) | 7 | **n/a (0 FP)** | 13 | n/a |
+| **Variant BFLA** | Function-level privilege escalation (`GET /admin/users`) | 1 | **0% (0/1)** | 7 | **100% (1/1)** | 15 | 10.3 ms |
 
 ### 🔬 Controlled Ablation Study
 
@@ -271,3 +272,4 @@ Planned, not shipped. Full detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 5. **Dry run is a preview:** it lists a setup, control and probe step per route. The live scan reuses one created record, so it sends fewer requests.
 6. **Benchmark scope:** measured on our own target with our own answer key, against a baseline that only tests routes it has a rule for.
 7. **Hosted demo is a replay:** the GitHub Pages build replays recorded runs; importing a spec and calling a live model need the local backend.
+8. **BFLA detection scope:** Broken Function Level Authorization (OWASP API5) verifies admin privilege boundaries for operations flagged via `admin_operations` patterns, `/admin` path segments, or the `admin` OpenAPI tag. An admin identity executes control calls while the attacker executes probes. Admin routes with path parameters resolve IDs harvested earlier in the scan; unharvested parameters are skipped (`needs path parameter {name}`) without false-secure reporting, and failed admin controls are recorded as skips with HTTP status. A probe is only CONFIRMED when returning 2xx with a non-empty payload structurally matching the admin control response; soft-200 error payloads, empty collections, or divergent shapes are classified as POTENTIAL (confidence ≤ 0.5, exit code 0). Real credential tokens are never exposed in reproduction artifacts, using `<USER_B_TOKEN>` placeholders.

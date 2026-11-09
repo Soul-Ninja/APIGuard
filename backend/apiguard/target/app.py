@@ -175,6 +175,26 @@ def get_project_audit_log(project_id: str, authorization: Optional[str] = Header
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
     return {"events": ["created", "viewed"]}
 
+# ========================
+# ADMIN / BFLA ENDPOINTS
+# ========================
+@target_app.get("/admin/users")
+def get_admin_users(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
+    cfg = get_target_config()
+
+    # BFLA DEFECT: If defect_bfla is enabled and not patched, role check is skipped!
+    is_vulnerable = cfg.defect_bfla and not cfg.patched_mode
+    if not is_vulnerable:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: Admin role required")
+
+    return [
+        {"id": "usr_admin_001", "username": "admin@corp.internal", "role": "admin"},
+        {"id": "usr_aman_101", "username": "aman@acme.corp", "role": "customer"},
+        {"id": "usr_taaran_202", "username": "taaran@adversary.io", "role": "customer"}
+    ]
+
 @target_app.post("/reset")
 def reset_endpoint():
     reset_db()

@@ -1,14 +1,15 @@
 # APIGuard Benchmark Results
-*Measured automatically on 2026-10-31T11:04:55Z against target: `http://127.0.0.1:8000/target`*
+*Measured automatically on 2026-11-09T22:44:25Z against target: `http://127.0.0.1:8000/target`*
 
 ## Variant Comparison Table
 | Variant | GT | Base Confirmed | Base Recall | Base Prec | Base Req/Fnd | APIGuard Confirmed | APIGuard Recall | APIGuard Prec | APIGuard Req/Fnd | APIGuard Avg ms/Fnd |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `variant_a` | 1 | 1 | 100% | 100% | 7.0 | **1** | **100%** | **100%** | **15.0** | 15.9ms |
-| `variant_b` | 1 | 0 | 0% | n/a | - | **1** | **100%** | **100%** | **15.0** | 13.9ms |
-| `variant_c` | 1 | 1 | 100% | 100% | 7.0 | **1** | **100%** | **100%** | **15.0** | 10.5ms |
-| `variant_all` | 3 | 2 | 67% | 100% | 3.5 | **3** | **100%** | **100%** | **6.3** | 6.8ms |
+| `variant_a` | 1 | 1 | 100% | 100% | 7.0 | **1** | **100%** | **100%** | **15.0** | 13.6ms |
+| `variant_b` | 1 | 0 | 0% | n/a | - | **1** | **100%** | **100%** | **15.0** | 12.6ms |
+| `variant_c` | 1 | 1 | 100% | 100% | 7.0 | **1** | **100%** | **100%** | **15.0** | 11.9ms |
+| `variant_all` | 3 | 2 | 67% | 100% | 3.5 | **3** | **100%** | **100%** | **6.3** | 5.4ms |
 | `variant_secure` | 0 | 0 | n/a | 100% | - | **0** | **n/a** | **100%** | **-** | - |
+| `variant_bfla` | 1 | 0 | 0% | n/a | - | **1** | **100%** | **100%** | **15.0** | 11.1ms |
 
 ## Ablations (Measured on Defect B Variant)
 | Configuration | Confirmed | Recall | Precision | Requests | Notes |
