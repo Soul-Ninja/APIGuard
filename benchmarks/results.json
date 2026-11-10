@@ -1,19 +1,19 @@
 {
-  "timestamp": "2026-11-10T14:03:58Z",
+  "timestamp": "2026-11-10T14:58:26Z",
   "target": "http://127.0.0.1:8000/target",
-  "variants_tested": 7,
+  "variants_tested": 8,
   "aggregate_metrics": {
     "graph_guided": {
-      "total_confirmed": 9,
-      "total_ground_truth": 9,
+      "total_confirmed": 10,
+      "total_ground_truth": 10,
       "aggregate_recall": 1.0,
-      "requests_per_finding": 12.1
+      "requests_per_finding": 13.0
     },
     "baseline": {
       "total_confirmed": 4,
-      "total_ground_truth": 9,
-      "aggregate_recall": 0.44,
-      "requests_per_finding": 12.2
+      "total_ground_truth": 10,
+      "aggregate_recall": 0.4,
+      "requests_per_finding": 14.0
     }
   },
   "variants": {
@@ -26,8 +26,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 24.5,
-        "duration_ms": 24.5
+        "avg_ms_per_finding": 15.0,
+        "duration_ms": 15.0
       },
       "baseline": {
         "confirmed": 1,
@@ -35,8 +35,8 @@
         "precision": 1.0,
         "requests": 7,
         "req_per_finding": 7.0,
-        "avg_ms_per_finding": 9.9,
-        "duration_ms": 9.9
+        "avg_ms_per_finding": 6.0,
+        "duration_ms": 6.0
       }
     },
     "variant_b": {
@@ -48,8 +48,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 20.5,
-        "duration_ms": 20.5
+        "avg_ms_per_finding": 13.5,
+        "duration_ms": 13.5
       },
       "baseline": {
         "confirmed": 0,
@@ -58,7 +58,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 10.3
+        "duration_ms": 3.3
       }
     },
     "variant_c": {
@@ -70,8 +70,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 23.3,
-        "duration_ms": 23.3
+        "avg_ms_per_finding": 10.4,
+        "duration_ms": 10.4
       },
       "baseline": {
         "confirmed": 1,
@@ -79,8 +79,8 @@
         "precision": 1.0,
         "requests": 7,
         "req_per_finding": 7.0,
-        "avg_ms_per_finding": 9.5,
-        "duration_ms": 9.5
+        "avg_ms_per_finding": 3.2,
+        "duration_ms": 3.2
       }
     },
     "variant_all": {
@@ -92,8 +92,8 @@
         "precision": 1.0,
         "requests": 19,
         "req_per_finding": 6.3,
-        "avg_ms_per_finding": 8.3,
-        "duration_ms": 24.8
+        "avg_ms_per_finding": 5.4,
+        "duration_ms": 16.2
       },
       "baseline": {
         "confirmed": 2,
@@ -101,8 +101,8 @@
         "precision": 1.0,
         "requests": 7,
         "req_per_finding": 3.5,
-        "avg_ms_per_finding": 4.2,
-        "duration_ms": 8.5
+        "avg_ms_per_finding": 2.5,
+        "duration_ms": 4.9
       }
     },
     "variant_secure": {
@@ -115,7 +115,7 @@
         "requests": 13,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 12.6
+        "duration_ms": 9.3
       },
       "baseline": {
         "confirmed": 0,
@@ -124,7 +124,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 4.8
+        "duration_ms": 3.2
       }
     },
     "variant_bfla": {
@@ -136,8 +136,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 17.3,
-        "duration_ms": 17.3
+        "avg_ms_per_finding": 10.0,
+        "duration_ms": 10.0
       },
       "baseline": {
         "confirmed": 0,
@@ -146,7 +146,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 4.5
+        "duration_ms": 3.1
       }
     },
     "variant_bopla": {
@@ -158,8 +158,8 @@
         "precision": 1.0,
         "requests": 17,
         "req_per_finding": 8.5,
-        "avg_ms_per_finding": 8.4,
-        "duration_ms": 16.9
+        "avg_ms_per_finding": 5.3,
+        "duration_ms": 10.6
       },
       "baseline": {
         "confirmed": 0,
@@ -168,7 +168,29 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 7.2
+        "duration_ms": 3.1
+      }
+    },
+    "variant_auth": {
+      "description": "Broken Authentication defect: GET /projects/{project_id}/summary accepts requests with no token or an alg:none JWT",
+      "ground_truth_count": 1,
+      "graph_guided": {
+        "confirmed": 1,
+        "recall": 1.0,
+        "precision": 1.0,
+        "requests": 21,
+        "req_per_finding": 21.0,
+        "avg_ms_per_finding": 12.9,
+        "duration_ms": 12.9
+      },
+      "baseline": {
+        "confirmed": 0,
+        "recall": 0.0,
+        "precision": null,
+        "requests": 7,
+        "req_per_finding": null,
+        "avg_ms_per_finding": null,
+        "duration_ms": 3.1
       }
     }
   },
@@ -180,7 +202,7 @@
       "recall": 0.0,
       "precision": null,
       "requests": 6,
-      "duration_ms": 7.6,
+      "duration_ms": 5.3,
       "note": "Measured: with propagation off the scanner stops after the main read route and never tests the nested routes."
     },
     "oracle_baseline_on_variant_b": {
@@ -190,7 +212,7 @@
       "recall": 1.0,
       "precision": 1.0,
       "requests": 9,
-      "duration_ms": 9.5,
+      "duration_ms": 4.1,
       "note": "Measured: baseline given a hand-written ownership rule for every route."
     }
   }

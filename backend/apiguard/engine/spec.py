@@ -286,6 +286,7 @@ class OpenAPIParser:
 
     def extract_operations(self) -> List[Operation]:
         operations = []
+        root_security = self.spec_dict.get("security")
         for path, item in self.spec_dict.get("paths", {}).items():
             if not isinstance(item, dict):
                 continue
@@ -299,6 +300,14 @@ class OpenAPIParser:
                     s = self._json_schema(resp)
                     if s:
                         resolved_responses[str(code)] = s
+
+                op_security = op.get("security")
+                if op_security is not None:
+                    is_public = (len(op_security) == 0)
+                else:
+                    is_public = (root_security is None or len(root_security) == 0)
+
+                active_sec = op_security if op_security is not None else (root_security or [])
                 operations.append(Operation(
                     id=op_id,
                     method=method.upper(),
@@ -309,9 +318,10 @@ class OpenAPIParser:
                     request_schema_ref=self._json_schema(op.get("requestBody", {})).get("$ref"),
                     response_schema_refs={str(code): ref for code, r in op.get("responses", {}).items()
                                           if (ref := self._json_schema(r).get("$ref"))},
-                    security_schemes=[name for req in op.get("security", []) if isinstance(req, dict) for name in req],
+                    security_schemes=[name for req in active_sec if isinstance(req, dict) for name in req],
                     tags=op.get("tags", []),
                     summary=op.get("summary"),
+                    is_public=is_public,
                     request_schema=self._json_schema(resolved_op.get("requestBody", {})) or None,
                     response_schemas=resolved_responses,
                 ))

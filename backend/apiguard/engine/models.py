@@ -69,6 +69,7 @@ class IdentityProfile(BaseModel):
     password: str = ""
     role: str = "customer"
     token: Optional[str] = None
+    expired_token: Optional[str] = None
     headers: Dict[str, str] = Field(default_factory=dict)
 
     def get_auth_headers(self) -> Dict[str, str]:
@@ -94,6 +95,7 @@ class Operation(BaseModel):
     security_schemes: List[str] = []
     tags: List[str] = []
     summary: Optional[str] = None
+    is_public: bool = False
     request_schema: Optional[Dict[str, Any]] = None
     response_schemas: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
@@ -180,4 +182,6 @@ class ScanCoverage(BaseModel):
     admin_operations_tested: List[str] = Field(default_factory=list)
     bopla_operations_found: List[str] = Field(default_factory=list)
     bopla_operations_tested: List[str] = Field(default_factory=list)
+    auth_operations_found: List[str] = Field(default_factory=list)
+    auth_operations_tested: List[str] = Field(default_factory=list)
 

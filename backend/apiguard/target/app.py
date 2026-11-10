@@ -1,3 +1,5 @@
+import base64
+import json
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
@@ -173,6 +175,27 @@ def delete_project(project_id: str, authorization: Optional[str] = Header(None))
 @target_app.get("/projects/{project_id}/summary")
 def get_project_summary(project_id: str, authorization: Optional[str] = Header(None)):
     """Trap 1: Returns 200 with empty body for non-owners (must NOT be confirmed BOLA)"""
+    cfg = get_target_config()
+    is_auth_defective = cfg.defect_auth and not cfg.patched_mode
+    if is_auth_defective:
+        # Accepts requests with no token or an alg:none JWT
+        token = authorization.replace("Bearer ", "").strip() if authorization else None
+        is_alg_none = False
+        if token and "." in token:
+            parts = token.split(".")
+            try:
+                padded = parts[0] + "=" * (-len(parts[0]) % 4)
+                h = json.loads(base64.urlsafe_b64decode(padded))
+                if isinstance(h, dict) and str(h.get("alg", "")).lower() == "none":
+                    is_alg_none = True
+            except Exception:
+                pass
+        if not authorization or is_alg_none:
+            project = PROJECTS_STORE.get(project_id)
+            if not project:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+            return {"status": "active", "task_count": 12}
+
     user = get_current_user(authorization)
     project = PROJECTS_STORE.get(project_id)
     if not project:

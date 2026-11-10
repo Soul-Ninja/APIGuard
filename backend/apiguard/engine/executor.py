@@ -17,8 +17,8 @@ class SafeExecutor:
     def __init__(
         self,
         allowed_hosts: Optional[Set[str]] = None,
-        total_budget: int = 50,
-        per_endpoint_budget: int = 6,
+        total_budget: int = 60,
+        per_endpoint_budget: int = 10,
         timeout_seconds: float = 5.0,
         max_response_bytes: int = 500_000,
         enable_mutations: bool = False

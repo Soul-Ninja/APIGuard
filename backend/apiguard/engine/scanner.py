@@ -1,3 +1,4 @@
+import base64
 import json
 import re
 import time
@@ -20,6 +21,37 @@ from apiguard.engine.target import (
 
 DEFAULT_BASE = "http://127.0.0.1:8000/target"
 OK = lambda res: 200 <= res.status_code < 300
+
+
+def is_jwt(token: Optional[str]) -> bool:
+    if not token or not isinstance(token, str):
+        return False
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        for part in parts[:2]:
+            padded = part + "=" * (-len(part) % 4)
+            data = base64.urlsafe_b64decode(padded)
+            json.loads(data)
+        return True
+    except Exception:
+        return False
+
+
+def make_alg_none_jwt(token: str) -> str:
+    parts = token.split(".")
+    header_json = json.dumps({"alg": "none", "typ": "JWT"}, separators=(",", ":")).encode("utf-8")
+    header_b64 = base64.urlsafe_b64encode(header_json).decode("utf-8").rstrip("=")
+    payload_b64 = parts[1]
+    return f"{header_b64}.{payload_b64}."
+
+
+def make_altered_sig_jwt(token: str) -> str:
+    parts = token.split(".")
+    sig = parts[2]
+    new_sig = ("X" if not sig.startswith("X") else "Y") + sig[1:] + "tampered"
+    return f"{parts[0]}.{parts[1]}.{new_sig}"
 
 
 def _is_error_payload(data: Any) -> bool:
@@ -168,7 +200,8 @@ class GraphGuidedScanner:
                        enable_mutations: bool = False, on_event: Optional[Callable] = None,
                        client: Optional[httpx.AsyncClient] = None,
                        admin_user: Optional[IdentityProfile] = None,
-                       enable_bopla: bool = True) -> List[Finding]:
+                       enable_bopla: bool = True,
+                       enable_auth: bool = True) -> List[Finding]:
         self.graph.build_from_operations(operations)
         self.coverage = ScanCoverage()
 
@@ -233,6 +266,7 @@ class GraphGuidedScanner:
         harvested_ids: Dict[str, str] = {}
         harvested_for_bopla: List[Tuple[Any, str, Operation, Operation, str, str, Any, str]] = []
         recorded_responses: List[Tuple[PlanStep, Any]] = []
+        successful_owner_controls: Dict[str, Tuple[Operation, PlanStep, Any]] = {}
 
         async def ex(step: PlanStep):
             res = await self._execute_and_emit(step, on_event, client)
@@ -308,7 +342,8 @@ class GraphGuidedScanner:
                 await self._emit(on_event, "log", f"[SKIPPED] Resource '{name}' skipped: {reason}", "A")
                 continue
 
-            ctrl = await ex(self._step(f"ctrl_{primary.operation_id}", user_a, primary, "control_owner", obj_id))
+            ctrl_step = self._step(f"ctrl_{primary.operation_id}", user_a, primary, "control_owner", obj_id)
+            ctrl = await ex(ctrl_step)
             if not OK(ctrl):
                 if ctrl.status_code == 0:
                     reason = f"connection error ({ctrl.error or 'unreachable host'}) on control read"
@@ -317,6 +352,7 @@ class GraphGuidedScanner:
                 self.coverage.skipped.append(ResourceSkip(resource=name, reason=reason))
                 await self._inconclusive(on_event, primary, ctrl, "A")
                 continue
+            successful_owner_controls[primary.operation_id] = (primary, ctrl_step, ctrl)
 
             probe_step = self._step(f"probe_{primary.operation_id}", user_b, primary, "probe_adversary", obj_id)
             probe = await ex(probe_step)
@@ -352,11 +388,13 @@ class GraphGuidedScanner:
 
             for op in test_ops:
                 mutates = op.method in {"PATCH", "PUT"}
-                c = await ex(self._step(f"ctrl_{op.operation_id}", user_a, op, "control_owner", obj_id,
-                                        {"name": "Mutated Name", "budget": "$999,000"} if mutates else None))
+                c_step = self._step(f"ctrl_{op.operation_id}", user_a, op, "control_owner", obj_id,
+                                    {"name": "Mutated Name", "budget": "$999,000"} if mutates else None)
+                c = await ex(c_step)
                 if not OK(c):
                     await self._inconclusive(on_event, op, c, "B")
                     continue
+                successful_owner_controls[op.operation_id] = (op, c_step, c)
                 p_step = self._step(f"probe_{op.operation_id}", user_b, op, "probe_adversary", obj_id,
                                     {"name": "Attacker Hijack", "budget": "$1"} if mutates else None)
                 p = await ex(p_step)
@@ -791,6 +829,133 @@ class GraphGuidedScanner:
                         findings.append(f)
                         await self._confirm(on_event, f, f"BOPLA Excessive Data Exposure on {op.method} {op.path}: {k}")
 
+        # ---- Phase: Broken Authentication (OWASP API2) ----
+        profile_auth_enabled = getattr(self.target_profile, "auth_checks", True) if self.target_profile else True
+        if enable_auth and profile_auth_enabled:
+            for op in operations:
+                check_name = f"Broken Authentication: {op.method} {op.path}"
+
+                # 1. Skip operations marked public in spec
+                if getattr(op, "is_public", False):
+                    self.coverage.skipped.append(ResourceSkip(resource=check_name, reason="marked public in spec (security: [])"))
+                    continue
+
+                # 2. Check mutation gate
+                if op.method in {"POST", "PUT", "PATCH", "DELETE"} and not enable_mutations:
+                    self.coverage.skipped.append(ResourceSkip(resource=check_name, reason="--mutations not set"))
+                    continue
+
+                # 3. Check if owner control succeeded
+                if op.operation_id not in successful_owner_controls:
+                    self.coverage.skipped.append(ResourceSkip(resource=check_name, reason="no successful owner control call"))
+                    continue
+
+                cached_op, ctrl_step, ctrl_res = successful_owner_controls[op.operation_id]
+                if check_name not in self.coverage.auth_operations_found:
+                    self.coverage.auth_operations_found.append(check_name)
+
+                tampering_checks: List[Tuple[str, str, Dict[str, str], str]] = []
+
+                # Check 1: No Authorization header (and no other identity headers)
+                tampering_checks.append((
+                    "no_auth",
+                    "No Authorization header",
+                    {},
+                    f"curl -X {op.method} '{ctrl_step.url}'"
+                ))
+
+                # Check 2: Garbage token
+                tampering_checks.append((
+                    "garbage_token",
+                    "Garbage Bearer token",
+                    {"Authorization": "Bearer invalid"},
+                    f"curl -X {op.method} '{ctrl_step.url}' -H 'Authorization: Bearer <GARBAGE_TOKEN>'"
+                ))
+
+                # Check 3: If owner token is JWT: (a) alg:none, (b) altered signature
+                if is_jwt(user_a.token):
+                    alg_none_tok = make_alg_none_jwt(user_a.token)
+                    tampering_checks.append((
+                        "alg_none_jwt",
+                        "alg:none JWT",
+                        {"Authorization": f"Bearer {alg_none_tok}"},
+                        f"curl -X {op.method} '{ctrl_step.url}' -H 'Authorization: Bearer <ALG_NONE_JWT>'"
+                    ))
+                    altered_tok = make_altered_sig_jwt(user_a.token)
+                    tampering_checks.append((
+                        "altered_signature_jwt",
+                        "Altered signature JWT",
+                        {"Authorization": f"Bearer {altered_tok}"},
+                        f"curl -X {op.method} '{ctrl_step.url}' -H 'Authorization: Bearer <ALTERED_SIGNATURE_JWT>'"
+                    ))
+
+                # Check 4: Expired token if configured on owner identity
+                if getattr(user_a, "expired_token", None):
+                    tampering_checks.append((
+                        "expired_token",
+                        "Expired token",
+                        {"Authorization": f"Bearer {user_a.expired_token}"},
+                        f"curl -X {op.method} '{ctrl_step.url}' -H 'Authorization: Bearer <EXPIRED_TOKEN>'"
+                    ))
+
+                if check_name not in self.coverage.auth_operations_tested:
+                    self.coverage.auth_operations_tested.append(check_name)
+
+                for tampering_code, tampering_desc, t_headers, repro_cmd in tampering_checks:
+                    t_step = PlanStep(
+                        step_id=f"auth_probe_{op.operation_id}_{tampering_code}",
+                        identity_id="anonymous" if tampering_code == "no_auth" else user_a.identity_id,
+                        operation_id=op.operation_id,
+                        method=op.method,
+                        path_template=op.path,
+                        url=ctrl_step.url,
+                        headers=t_headers,
+                        json_body=ctrl_step.json_body,
+                        purpose="probe_adversary"
+                    )
+                    probe_res = await ex(t_step)
+
+                    if 200 <= probe_res.status_code < 300:
+                        is_match = _shape_matches(ctrl_res.body, probe_res.body)
+                        status = FindingStatus.CONFIRMED if is_match else FindingStatus.POTENTIAL
+                        confidence = 0.95 if is_match else 0.40
+                        severity = "HIGH" if is_match else "LOW"
+
+                        f = Finding(
+                            id=f"fnd_auth_{uuid.uuid4().hex[:6]}",
+                            category="AUTH",
+                            severity=severity,
+                            endpoint=op.path,
+                            method=op.method,
+                            resource_type=op.tags[0] if op.tags else "API",
+                            status=status,
+                            confidence=confidence,
+                            identities={"owner": user_a.identity_id, "probe": "tampered_auth"},
+                            hypothesis=Hypothesis(
+                                id=f"hyp_auth_{op.operation_id}_{tampering_code}",
+                                rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type=op.tags[0] if op.tags else "API"),
+                                operation_id=op.operation_id,
+                                confidence=confidence,
+                                provenance=Provenance.DOCUMENTED
+                            ),
+                            graph_path=[f"{op.method} {op.path} (Broken Authentication: {tampering_desc})"],
+                            control_evidence={"status_code": ctrl_res.status_code},
+                            probe_evidence={"status_code": probe_res.status_code, "tampering": tampering_desc},
+                            diff_fields=[f"tampering: {tampering_desc}"],
+                            repro_curl=repro_cmd,
+                            reproduction_steps=[
+                                f"1. Send {op.method} {op.path} with {tampering_desc} (repro cURL: {repro_cmd}) -> HTTP {probe_res.status_code}",
+                                f"2. Compare against authenticated response (HTTP {ctrl_res.status_code})."
+                            ]
+                        )
+                        findings.append(f)
+                        if is_match:
+                            await self._confirm(on_event, f, f"Broken Authentication on {op.method} {op.path} ({tampering_desc})")
+                        else:
+                            await self._emit(on_event, "log", f"[POTENTIAL] Broken Authentication on {op.method} {op.path}: {tampering_desc} returned 2xx but body differed or indicated error", "C", f.model_dump())
+                    elif probe_res.status_code in {401, 403}:
+                        await self._denied(on_event, op, probe_res, "B", f"[AUTH] {tampering_desc} denied with HTTP {probe_res.status_code} (Secure)")
+
         unique: Dict[tuple, Finding] = {}  # one finding per category/method/endpoint/diff_fields
         for f in findings:
             unique.setdefault((getattr(f, "category", "BOLA"), f.method, f.endpoint, tuple(f.diff_fields)), f)
@@ -812,7 +977,8 @@ class GraphGuidedScanner:
 
 async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.yaml", enable_mutations: bool = False,
                       budget: int = 30, on_event: Optional[Callable] = None, client: Optional[httpx.AsyncClient] = None,
-                      operations: Optional[List[Operation]] = None, enable_bopla: bool = True) -> List[Finding]:
+                      operations: Optional[List[Operation]] = None, enable_bopla: bool = True,
+                      enable_auth: bool = True) -> List[Finding]:
     """Scan an API described by a TargetProfile."""
     from apiguard.engine.auth import AuthRegistry
 
@@ -841,4 +1007,5 @@ async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.
 
     scanner = GraphGuidedScanner(executor=executor, base_url=profile.base_url, target_profile=profile)
     return await scanner.run_scan(operations=profile.load_operations() if operations is None else operations, user_a=user_a, user_b=user_b,
-                                  admin_user=admin_user, enable_mutations=enable_mutations, enable_bopla=enable_bopla, on_event=on_event, client=client)
+                                  admin_user=admin_user, enable_mutations=enable_mutations, enable_bopla=enable_bopla,
+                                  enable_auth=enable_auth, on_event=on_event, client=client)

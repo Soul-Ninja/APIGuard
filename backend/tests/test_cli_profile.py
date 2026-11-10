@@ -16,6 +16,7 @@ BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
 orders_app = FastAPI()
 orders_db = {}
 orders_defect_bopla = False
+orders_defect_auth = False
 
 
 class LoginRequest(BaseModel):
@@ -59,6 +60,10 @@ def create_order(order: OrderCreate, authorization: str = Header(None)):
 
 @orders_app.get("/orders/{order_id}")
 def get_order(order_id: str, authorization: str = Header(None)):
+    global orders_defect_auth
+    if not orders_defect_auth:
+        if not authorization or not authorization.startswith("Bearer tok_"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
     if order_id not in orders_db:
         raise HTTPException(status_code=404, detail="Order not found")
     # Deliberate BOLA: does not check if caller is owner
@@ -612,6 +617,56 @@ resources:
         assert "POST /orders" in captured
     finally:
         orders_defect_bopla = False
+
+
+@pytest.mark.asyncio
+async def test_orders_broken_authentication_found(tmp_path, orders_server, capsys):
+    global orders_defect_auth
+    orders_defect_auth = True
+    try:
+        spec_file = tmp_path / "orders_spec.yaml"
+        spec_file.write_text(ORDERS_SPEC, encoding="utf-8")
+
+        profile_content = f"""
+base_url: "{orders_server}"
+spec_path: "{spec_file.as_posix()}"
+allowed_hosts:
+  - "127.0.0.1"
+  - "localhost"
+request_budget: 30
+owner: "customer_a"
+attacker: "customer_b"
+login:
+  path: "/auth/login"
+  body_template:
+    username: "{{username}}"
+    password: "{{password}}"
+  token_path: "access_token"
+  user_id_path: "uid"
+identities:
+  - name: "customer_a"
+    username: "alice@orders.test"
+    password: "pwd"
+  - name: "customer_b"
+    username: "bob@orders.test"
+    password: "pwd"
+resources:
+  orders:
+    id_path: "id"
+    owner_field: "customer_id"
+    sensitive_fields:
+      - "customer"
+"""
+        profile_file = tmp_path / "orders_profile_auth.yaml"
+        profile_file.write_text(profile_content, encoding="utf-8")
+
+        code = await run_cli_scan(dry_run=False, profile_path=str(profile_file))
+        assert code == 1
+        captured = capsys.readouterr().out
+        assert "BROKEN AUTHENTICATION FINDING" in captured
+        assert "GET /orders/{order_id}" in captured
+    finally:
+        orders_defect_auth = False
 
 
 @pytest.mark.asyncio

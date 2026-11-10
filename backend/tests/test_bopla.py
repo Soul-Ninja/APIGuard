@@ -397,7 +397,7 @@ async def test_patch_injection_not_sent_without_mutations():
         # 1. Without mutations: PATCH injection skipped
         scanner_no_mut = GraphGuidedScanner(SafeExecutor(allowed_hosts={"127.0.0.1"}, enable_mutations=False), "http://127.0.0.1:8000", target_profile=profile)
         findings_no_mut = await scanner_no_mut.run_scan(ops, user_a, user_b, enable_mutations=False, client=client, enable_bopla=True)
-        patch_skips = [s for s in scanner_no_mut.coverage.skipped if "PATCH" in s.resource and "--mutations not set" in s.reason]
+        patch_skips = [s for s in scanner_no_mut.coverage.skipped if "Mass Assignment: PATCH" in s.resource and "--mutations not set" in s.reason]
         assert len(patch_skips) == 1
 
         # 2. With mutations: PATCH injection executed and finds mass assignment

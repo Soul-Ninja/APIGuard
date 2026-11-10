@@ -25,6 +25,7 @@ VARIANT_CONFIGS = {
     "variant_secure": dict(defect_a=False, defect_b=False, defect_c=False, defect_bfla=False, patched_mode=True),
     "variant_bfla": dict(defect_a=False, defect_b=False, defect_c=False, defect_bfla=True, patched_mode=False),
     "variant_bopla": dict(defect_a=False, defect_b=False, defect_c=False, defect_bfla=False, defect_mass_assign=True, defect_exposure=True, patched_mode=False),
+    "variant_auth": dict(defect_a=False, defect_b=False, defect_c=False, defect_bfla=False, defect_mass_assign=False, defect_exposure=False, defect_auth=True, patched_mode=False),
 }
 
 
@@ -33,7 +34,7 @@ def load_manifest(variant: str) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"variant": variant, "vulnerable_endpoints": []}
 
 
-async def _run(scanner: str, base_url, ops, user_a, user_b, client, cfg=None, admin_user=None, enable_bopla: bool = False, **opts):
+async def _run(scanner: str, base_url, ops, user_a, user_b, client, cfg=None, admin_user=None, enable_bopla: bool = False, enable_auth: bool = False, **opts):
     """Reset the target, apply cfg, run one scanner. Returns (findings, executor, duration_ms)."""
     reset_db()
     if cfg:
@@ -41,7 +42,7 @@ async def _run(scanner: str, base_url, ops, user_a, user_b, client, cfg=None, ad
     ex = SafeExecutor(allowed_hosts=HOSTS, total_budget=30, enable_mutations=True)
     t0 = time.perf_counter()
     if scanner == "graph":
-        findings = await GraphGuidedScanner(ex, base_url, **opts).run_scan(ops, user_a, user_b, admin_user=admin_user, enable_mutations=True, enable_bopla=enable_bopla, client=client)
+        findings = await GraphGuidedScanner(ex, base_url, **opts).run_scan(ops, user_a, user_b, admin_user=admin_user, enable_mutations=True, enable_bopla=enable_bopla, enable_auth=enable_auth, client=client)
     else:
         findings = await BaselineScanner(ex, base_url, **opts).scan_operations(ops, user_a, user_b, enable_mutations=True, client=client)
     return findings, ex, round((time.perf_counter() - t0) * 1000, 1)
@@ -101,13 +102,16 @@ async def run_benchmark(base_url: str = "http://127.0.0.1:8000/target", client: 
             total_gt += len(truth)
             if name == "variant_bfla":
                 var_ops = ops + [bfla_op]
-                g_find, g_ex, g_ms = await _run("graph", base_url, var_ops, user_a, user_b, client, cfg=cfg, admin_user=admin_user, enable_bopla=False)
+                g_find, g_ex, g_ms = await _run("graph", base_url, var_ops, user_a, user_b, client, cfg=cfg, admin_user=admin_user, enable_bopla=False, enable_auth=False)
                 b_find, b_ex, b_ms = await _run("baseline", base_url, var_ops, user_a, user_b, client, cfg=cfg)
             elif name == "variant_bopla":
-                g_find, g_ex, g_ms = await _run("graph", *args, cfg=cfg, enable_bopla=True)
+                g_find, g_ex, g_ms = await _run("graph", *args, cfg=cfg, enable_bopla=True, enable_auth=False)
+                b_find, b_ex, b_ms = await _run("baseline", *args)
+            elif name == "variant_auth":
+                g_find, g_ex, g_ms = await _run("graph", *args, cfg=cfg, enable_bopla=False, enable_auth=True)
                 b_find, b_ex, b_ms = await _run("baseline", *args)
             else:
-                g_find, g_ex, g_ms = await _run("graph", *args, cfg=cfg, enable_bopla=False)
+                g_find, g_ex, g_ms = await _run("graph", *args, cfg=cfg, enable_bopla=False, enable_auth=False)
                 b_find, b_ex, b_ms = await _run("baseline", *args)
             row = {"graph_guided": _metrics(g_find, truth, g_ex, g_ms), "baseline": _metrics(b_find, truth, b_ex, b_ms)}
             for kind, m in row.items():
@@ -120,7 +124,7 @@ async def run_benchmark(base_url: str = "http://127.0.0.1:8000/target", client: 
         runs = {
             "propagation_off_on_variant_b": ("Graph Scanner with Rule Propagation OFF",
                                               "Measured: with propagation off the scanner stops after the main read route and never tests the nested routes.",
-                                              await _run("graph", *args, cfg=b_cfg, disable_propagation=True, enable_bopla=False)),
+                                              await _run("graph", *args, cfg=b_cfg, disable_propagation=True, enable_bopla=False, enable_auth=False)),
             "oracle_baseline_on_variant_b": ("Oracle Baseline (Manual Rules Hand-Tagged for Every Route)",
                                               "Measured: baseline given a hand-written ownership rule for every route.",
                                               await _run("baseline", *args, oracle_mode=True)),

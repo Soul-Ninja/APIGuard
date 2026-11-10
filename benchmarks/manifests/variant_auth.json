@@ -1,0 +1,11 @@
+{
+  "variant": "variant_auth",
+  "description": "Broken Authentication defect: GET /projects/{project_id}/summary accepts requests with no token or an alg:none JWT",
+  "vulnerable_endpoints": [
+    {
+      "method": "GET",
+      "endpoint": "/projects/{project_id}/summary",
+      "type": "broken_authentication"
+    }
+  ]
+}

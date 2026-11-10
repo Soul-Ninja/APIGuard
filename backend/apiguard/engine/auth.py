@@ -80,6 +80,7 @@ class AuthRegistry:
                         password=ident.password,
                         role=role,
                         token=token,
+                        expired_token=ident.expired_token,
                         headers=headers
                     )
                 else:
@@ -93,6 +94,7 @@ class AuthRegistry:
                         password=ident.password or "",
                         role=ident.role,
                         token=token,
+                        expired_token=ident.expired_token,
                         headers=headers
                     )
 

@@ -132,6 +132,7 @@ class IdentityConfig(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     token: Optional[str] = None
+    expired_token: Optional[str] = None
 
 
 class ResourceOverride(BaseModel):
@@ -149,9 +150,10 @@ class TargetProfile(BaseModel):
     resources: Dict[str, ResourceOverride] = Field(default_factory=dict)
     admin_operations: List[str] = Field(default_factory=list)
     admin: Optional[str] = "admin"
+    auth_checks: bool = True
     mass_assignment_fields: Optional[Union[Dict[str, Any], List[Any]]] = Field(default_factory=dict)
     allowed_hosts: List[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost"])
-    request_budget: int = 30
+    request_budget: int = 60
     owner: str = "user_a"
     attacker: str = "user_b"
     is_demo: bool = False

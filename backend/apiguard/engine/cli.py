@@ -143,6 +143,24 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 else:
                     print(f"\nPlanned BOPLA Mass Assignment for {op.method} {op.path}: [MUTATION GATE: skipped without --mutations]")
 
+        auth_ops = [op for op in operations if not getattr(op, "is_public", False) and (op.method == "GET" or (op.method in {"POST", "PUT", "PATCH", "DELETE"} and enable_mutations))]
+        if auth_ops and getattr(profile, "auth_checks", True):
+            print("\n" + "=" * 65)
+            print("  BROKEN AUTHENTICATION CHECKS (OWASP API2)")
+            print("=" * 65)
+            from apiguard.engine.scanner import is_jwt
+            token_is_jwt = is_jwt(user_a.token)
+            for op in auth_ops:
+                url = f"{target_url}{op.path}"
+                print(f"\nPlanned Auth Tampering checks for {op.method} {op.path}:")
+                print(f"  - [probe_no_auth] {op.method} {url} (No Authorization Header)")
+                print(f"  - [probe_garbage_token] {op.method} {url} (Authorization: Bearer <GARBAGE_TOKEN>)")
+                if token_is_jwt:
+                    print(f"  - [probe_alg_none] {op.method} {url} (Authorization: Bearer <ALG_NONE_JWT>)")
+                    print(f"  - [probe_altered_sig] {op.method} {url} (Authorization: Bearer <ALTERED_SIGNATURE_JWT>)")
+                if getattr(user_a, "expired_token", None):
+                    print(f"  - [probe_expired_token] {op.method} {url} (Authorization: Bearer <EXPIRED_TOKEN>)")
+
         print("\n[SUCCESS] Dry-run completed. All prerequisite paths validated.")
         return 0
 
@@ -224,7 +242,8 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
 
     t0 = asyncio.get_event_loop().time()
     try:
-        findings = await scanner.run_scan(operations, user_a, user_b, admin_user=admin_user, enable_mutations=enable_mutations, client=client)
+        enable_auth = getattr(profile, "auth_checks", True)
+        findings = await scanner.run_scan(operations, user_a, user_b, admin_user=admin_user, enable_mutations=enable_mutations, enable_auth=enable_auth, client=client)
     except Exception as e:
         print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
         if client:
@@ -238,6 +257,7 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         and len(coverage.resources_tested) == 0
         and len(coverage.admin_operations_tested) == 0
         and len(getattr(coverage, "bopla_operations_tested", [])) == 0
+        and len(getattr(coverage, "auth_operations_tested", [])) == 0
     )
 
     confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
@@ -250,6 +270,7 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         bola_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BOLA"]
         bfla_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BFLA"]
         bopla_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BOPLA"]
+        auth_findings = [f for f in findings if getattr(f, "category", "BOLA") == "AUTH"]
 
         for f in bola_findings:
             if f.status == FindingStatus.POTENTIAL:
@@ -300,6 +321,23 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 print(f"    Leaked Fields: {f.diff_fields}")
                 print(f"    Repro Curl:    {f.repro_curl}")
 
+        for f in auth_findings:
+            if f.status == FindingStatus.POTENTIAL:
+                print(f"\n[?] NEEDS REVIEW: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                print(f"    Status:        POTENTIAL (tampered request returned 2xx but body differed or indicated error)")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    Tampering:     {', '.join(f.diff_fields)}")
+                print(f"    Repro Curl:    {f.repro_curl}")
+            else:
+                print(f"\n[!] BROKEN AUTHENTICATION FINDING: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                desc = "Broken Authentication: Tampered request accepted"
+                print(f"    Status:        {f.status.value.upper()} ({desc})")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    Tampering:     {', '.join(f.diff_fields)}")
+                print(f"    Repro Curl:    {f.repro_curl}")
+
     if client:
         await client.aclose()
 
@@ -311,6 +349,8 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
             print(f"[*] BFLA Coverage: Tested {len(coverage.admin_operations_tested)} of {len(coverage.admin_operations_found)} admin operations.")
         if coverage.bopla_operations_found:
             print(f"[*] BOPLA Coverage: Tested {len(coverage.bopla_operations_tested)} of {len(coverage.bopla_operations_found)} BOPLA checks.")
+        if getattr(coverage, "auth_operations_found", None):
+            print(f"[*] AUTH Coverage: Tested {len(coverage.auth_operations_tested)} of {len(coverage.auth_operations_found)} auth checks.")
 
     confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
     if len(confirmed_findings) > 0:
