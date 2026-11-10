@@ -151,6 +151,7 @@ class TargetProfile(BaseModel):
     admin_operations: List[str] = Field(default_factory=list)
     admin: Optional[str] = "admin"
     auth_checks: bool = True
+    passive_checks: bool = True
     mass_assignment_fields: Optional[Union[Dict[str, Any], List[Any]]] = Field(default_factory=dict)
     allowed_hosts: List[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost"])
     request_budget: int = 60

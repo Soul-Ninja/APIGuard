@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Code-Breaker-Ctrl/APIGuard"
-Demo = "https://code-breaker-ctrl.github.io/APIGuard/"
+Homepage = "https://github.com/Soul-Ninja/APIGuard"
+Demo = "https://soul-ninja.github.io/APIGuard/"
 
 [project.scripts]
 apiguard = "apiguard.engine.cli:main"

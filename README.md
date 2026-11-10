@@ -1,7 +1,7 @@
 # APIGuard: Graph-Guided API Authorization & BOLA Detection Engine
 
 <p align="center">
-  <a href="https://code-breaker-ctrl.github.io/APIGuard/"><img src="https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-10b981?style=flat-square&logo=githubpages&logoColor=white" alt="Live Demo"></a>
+  <a href="https://soul-ninja.github.io/APIGuard/"><img src="https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-10b981?style=flat-square&logo=githubpages&logoColor=white" alt="Live Demo"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white&style=flat-square" alt="Python 3.12">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white&style=flat-square" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black&style=flat-square" alt="React 19">
@@ -31,7 +31,7 @@ Most DAST scanners test endpoints in isolation: they fuzz parameters, receive `4
 
 ## 🌐 Live Hosted Demo
 
-👉 **[Launch APIGuard Live Demo (GitHub Pages)](https://code-breaker-ctrl.github.io/APIGuard/)**
+👉 **[Launch APIGuard Live Demo (GitHub Pages)](https://soul-ninja.github.io/APIGuard/)**
 
 Try APIGuard directly in your browser with zero installation:
 - ⚡ **Interactive Dependency DAG:** Explore operation and resource dependencies with Dagre auto-layout.
@@ -76,6 +76,9 @@ Every metric below was measured by running both scanners against the bundled dem
 | **Variant BFLA** | Function-level privilege escalation (`GET /admin/users`) | 1 | **0% (0/1)** | 7 | **100% (1/1)** | 15 | 10.3 ms |
 | **Variant BOPLA** | Property-level violations (mass assignment & exposure) | 2 | **0% (0/2)** | 7 | **100% (2/2)** | 17 | 8.4 ms |
 | **Variant AUTH** | Broken authentication (`GET /projects/{id}/summary`) | 1 | **0% (0/1)** | 7 | **100% (1/1)** | 21 | 12.9 ms |
+| **Variant MISCONFIG** | Security misconfiguration (CORS, traceback, version disclosure) | 3 | **0% (0/3)** | 7 | **100% (3/3)** | 13 | 2.2 ms |
+
+> **Note on Hygiene & Passive Findings:** In `Variant MISCONFIG`, APIGuard confirms 100% (3/3) of the ground-truth misconfigurations and also reports hygiene findings (missing `X-Content-Type-Options: nosniff`, missing `no-store` `Cache-Control` on authenticated sensitive data, and undocumented HTTP status codes) with **zero extra network requests**. Hygiene findings are listed under `not_scored` in the variant manifest, so they are printed but excluded from recall and precision. Passive findings are reported as CONFIRMED (observed facts) with exit code 0 by default; an upcoming release will add a `--fail-on` severity option for CI/CD gates.
 
 ### 🔬 Controlled Ablation Study
 
@@ -205,7 +208,7 @@ APIGuard/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/Code-Breaker-Ctrl/APIGuard.git
+git clone https://github.com/Soul-Ninja/APIGuard.git
 cd APIGuard
 ```
 
@@ -277,3 +280,4 @@ Planned, not shipped. Full detail in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 8. **BFLA detection scope:** Broken Function Level Authorization (OWASP API5) verifies admin privilege boundaries for operations flagged via `admin_operations` patterns, `/admin` path segments, or the `admin` OpenAPI tag. An admin identity executes control calls while the attacker executes probes. Admin routes with path parameters resolve IDs harvested earlier in the scan; unharvested parameters are skipped (`needs path parameter {name}`) without false-secure reporting, and failed admin controls are recorded as skips with HTTP status. A probe is only CONFIRMED when returning 2xx with a non-empty payload structurally matching the admin control response; soft-200 error payloads, empty collections, or divergent shapes are classified as POTENTIAL (confidence ≤ 0.5, exit code 0). Real credential tokens are never exposed in reproduction artifacts, using `<USER_B_TOKEN>` placeholders.
 9. **BOPLA detection scope:** Broken Object Property Level Authorization (OWASP API3) operates in two complementary modes. Part A (active mass assignment) injects unauthorized properties (`role`, `is_admin`, and resource `owner_field`) into object creation and mutation requests. A finding is CONFIRMED if the read-back response contains the injected property with the assigned value and that property is not documented as writable in the OpenAPI schema; if the server echoes the property in the creation response without persistence, it is classified as POTENTIAL (confidence ≤ 0.5). PATCH/PUT property injections follow the `--mutations` safety gate. Part B (passive excessive data exposure) inspects all 2xx JSON responses for undocumented properties matching sensitive patterns (`password`, `hash`, `secret`, `token`, etc.), confirming leaks with masked previews (`***`) and zero additional network requests. Operations lacking documented response schemas are recorded as coverage skips rather than false positives. Real credential tokens are never exposed in reproduction artifacts, using `<USER_A_TOKEN>` and `<TOKEN>` placeholders.
 10. **Broken Authentication detection scope:** Broken Authentication (OWASP API2) tests operations where the owner control call succeeded, replaying the exact request under four deterministic tampering strategies: missing authorization headers, invalid/garbage tokens, JWT header manipulation (the `alg:none` bypass with stripped signature and signature alteration), and expired tokens if configured in the profile (`expired_token`). Operations marked public in the OpenAPI specification (`security: []` or no security requirement defined) and operations lacking a successful owner control call are recorded as coverage skips. A finding is CONFIRMED only when the tampered request returns 2xx and the response payload structurally matches the owner's control response; 2xx responses with error-looking bodies, empty payloads, or divergent structures are classified as POTENTIAL (confidence ≤ 0.5, exit code 0). Rate-limiting and credential brute-force attacks are intentionally excluded as out-of-scope load tests. Real and forged token values are never exposed in reproduction artifacts, using token descriptions and standard `<GARBAGE_TOKEN>`, `<ALG_NONE_JWT>`, `<ALTERED_SIGNATURE_JWT>`, and `<EXPIRED_TOKEN>` placeholders.
+11. **Passive security checks scope:** Security misconfigurations (OWASP API8) and API inventory checks (OWASP API9) operate strictly passively on HTTP responses already captured during the active scan phases, sending **zero additional network requests**. CORS checks inspect observed wildcard origin with credentials; they do not forge custom `Origin` request headers. Verbose error detection flags stack traces and SQL errors with token-masked previews (`***`). Version disclosures inspect `Server` and `X-Powered-By` headers. Security header hygiene flags missing `nosniff` on JSON and missing `no-store`/`private` `Cache-Control` on responses carrying authenticated sensitive data. Inventory checks flag deprecated endpoints answering 2xx and undocumented HTTP status codes. Passive checks are reported as CONFIRMED (observed facts) with exit code 0 by default; an upcoming release will add a `--fail-on` severity option for CI/CD gates.

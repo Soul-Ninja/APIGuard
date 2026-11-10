@@ -1,0 +1,27 @@
+{
+  "variant": "variant_misconfig",
+  "description": "Security misconfiguration: CORS wildcard with credentials, verbose error traceback on summary, and version disclosure header",
+  "vulnerable_endpoints": [
+    {
+      "method": "ALL",
+      "endpoint": "CORS",
+      "type": "cors_credentials"
+    },
+    {
+      "method": "GET",
+      "endpoint": "/projects/{project_id}/summary",
+      "type": "verbose_error"
+    },
+    {
+      "method": "ALL",
+      "endpoint": "Version Disclosure",
+      "type": "version_disclosure"
+    }
+  ],
+  "not_scored": [
+    "Missing X-Content-Type-Options",
+    "Missing Strict-Transport-Security",
+    "Cache-Control",
+    "Undocumented Status Codes"
+  ]
+}

@@ -108,6 +108,40 @@ def _shape_matches(ctrl: Any, probe: Any) -> bool:
     return False
 
 
+VERBOSE_ERROR_PATTERNS = [
+    "traceback (most recent call last)",
+    "at java.",
+    "exception in thread",
+    "sqlstate",
+    "syntax error at or near",
+]
+
+VERSION_REGEX = re.compile(r"[/ ]\d+(\.\d+)+|\d+\.\d+")
+
+
+def _get_body_lines(body: Any) -> List[str]:
+    lines = []
+    if isinstance(body, str):
+        lines.extend(body.splitlines())
+    elif isinstance(body, dict):
+        for v in body.values():
+            lines.extend(_get_body_lines(v))
+    elif isinstance(body, list):
+        for item in body:
+            lines.extend(_get_body_lines(item))
+    return lines
+
+
+def _mask_token_like_strings(text: str, tokens: Optional[List[str]] = None) -> str:
+    for t in (tokens or []):
+        if t and len(t) >= 4:
+            text = text.replace(t, "***")
+    text = re.sub(r"ey[a-zA-Z0-9_\-]{15,}\.[a-zA-Z0-9_\-]{15,}(\.[a-zA-Z0-9_\-]+)?", "***", text)
+    text = re.sub(r"tok_[a-zA-Z0-9_\-]+", "***", text)
+    text = re.sub(r"Bearer\s+[a-zA-Z0-9_\-\.]+", "Bearer ***", text, flags=re.IGNORECASE)
+    return text
+
+
 class GraphGuidedScanner:
     """Graph-driven BOLA scanner: setup, control and probe steps are all derived from the resource DAG."""
 
@@ -201,7 +235,8 @@ class GraphGuidedScanner:
                        client: Optional[httpx.AsyncClient] = None,
                        admin_user: Optional[IdentityProfile] = None,
                        enable_bopla: bool = True,
-                       enable_auth: bool = True) -> List[Finding]:
+                       enable_auth: bool = True,
+                       enable_passive: bool = True) -> List[Finding]:
         self.graph.build_from_operations(operations)
         self.coverage = ScanCoverage()
 
@@ -267,6 +302,7 @@ class GraphGuidedScanner:
         harvested_for_bopla: List[Tuple[Any, str, Operation, Operation, str, str, Any, str]] = []
         recorded_responses: List[Tuple[PlanStep, Any]] = []
         successful_owner_controls: Dict[str, Tuple[Operation, PlanStep, Any]] = {}
+        op_map: Dict[str, Operation] = {op.operation_id: op for op in operations}
 
         async def ex(step: PlanStep):
             res = await self._execute_and_emit(step, on_event, client)
@@ -941,7 +977,7 @@ class GraphGuidedScanner:
                             graph_path=[f"{op.method} {op.path} (Broken Authentication: {tampering_desc})"],
                             control_evidence={"status_code": ctrl_res.status_code},
                             probe_evidence={"status_code": probe_res.status_code, "tampering": tampering_desc},
-                            diff_fields=[f"tampering: {tampering_desc}"],
+                            diff_fields=[tampering_desc],
                             repro_curl=repro_cmd,
                             reproduction_steps=[
                                 f"1. Send {op.method} {op.path} with {tampering_desc} (repro cURL: {repro_cmd}) -> HTTP {probe_res.status_code}",
@@ -955,6 +991,352 @@ class GraphGuidedScanner:
                             await self._emit(on_event, "log", f"[POTENTIAL] Broken Authentication on {op.method} {op.path}: {tampering_desc} returned 2xx but body differed or indicated error", "C", f.model_dump())
                     elif probe_res.status_code in {401, 403}:
                         await self._denied(on_event, op, probe_res, "B", f"[AUTH] {tampering_desc} denied with HTTP {probe_res.status_code} (Secure)")
+
+        # =========================================================================
+        # PHASE: Passive Checks (OWASP API8: Misconfiguration, API9: Inventory)
+        # Inspects recorded_responses only — sends ZERO extra requests.
+        # =========================================================================
+        if enable_passive and (self.target_profile is None or getattr(self.target_profile, "passive_checks", True)):
+            # 1. CORS check: Access-Control-Allow-Origin "*" together with Access-Control-Allow-Credentials "true" -> MEDIUM
+            cors_affected = set()
+            for (step, res) in recorded_responses:
+                h = {k.lower(): str(v).strip() for k, v in res.sanitized_headers.items()}
+                if h.get("access-control-allow-origin") == "*" and h.get("access-control-allow-credentials", "").lower() == "true":
+                    op = op_map.get(step.operation_id)
+                    cors_affected.add(f"{step.method} {op.path if op else step.url}")
+            if cors_affected:
+                f_cors = Finding(
+                    id=f"fnd_misconfig_cors_{uuid.uuid4().hex[:6]}",
+                    category="MISCONFIG",
+                    endpoint="CORS",
+                    method="ALL",
+                    resource_type="CORS Configuration",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="MEDIUM",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_misconfig_cors",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="CORS: Wildcard Origin with Credentials"),
+                        operation_id="cors_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["CORS Misconfiguration (Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true)"],
+                    control_evidence={},
+                    probe_evidence={
+                        "evidence": "Access-Control-Allow-Origin: * combined with Access-Control-Allow-Credentials: true",
+                        "headers": {"access-control-allow-origin": "*", "access-control-allow-credentials": "true"}
+                    },
+                    diff_fields=sorted(list(cors_affected)),
+                    repro_curl=f"curl -s -I {self.base_url}",
+                    reproduction_steps=[
+                        f"Observed Access-Control-Allow-Origin: * and Access-Control-Allow-Credentials: true on {len(cors_affected)} endpoint(s)."
+                    ]
+                )
+                findings.append(f_cors)
+                await self._confirm(on_event, f_cors, f"Passive Misconfiguration: CORS wildcard with credentials across {len(cors_affected)} endpoint(s)")
+
+            # 2. Verbose error check: body containing stack trace or framework/SQL error text -> MEDIUM
+            verbose_affected = set()
+            first_masked_line = None
+            known_tokens = [tok for ident in (user_a, user_b, admin_user) if ident for tok in (ident.token, ident.expired_token) if tok]
+            for (step, res) in recorded_responses:
+                lines = _get_body_lines(res.body)
+                matched_line = None
+                for line in lines:
+                    line_lower = line.lower()
+                    if any(pat in line_lower for pat in VERBOSE_ERROR_PATTERNS):
+                        matched_line = line
+                        break
+                if matched_line:
+                    op = op_map.get(step.operation_id)
+                    verbose_affected.add(f"{step.method} {op.path if op else step.url}")
+                    if not first_masked_line:
+                        first_masked_line = _mask_token_like_strings(matched_line.strip(), known_tokens)[:200]
+            if verbose_affected:
+                first_ep = sorted(list(verbose_affected))[0]
+                ep_path = first_ep.split()[1] if len(first_ep.split()) > 1 else first_ep
+                ep_method = first_ep.split()[0] if len(first_ep.split()) > 1 else "GET"
+                f_verbose = Finding(
+                    id=f"fnd_misconfig_verbose_{uuid.uuid4().hex[:6]}",
+                    category="MISCONFIG",
+                    endpoint=ep_path,
+                    method=ep_method,
+                    resource_type="Verbose Error Leaks",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="MEDIUM",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_misconfig_verbose",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Verbose Error Stack Trace / Framework Leak"),
+                        operation_id="verbose_error_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["Verbose Error Disclosure (Stack Trace or Framework Details)"],
+                    control_evidence={},
+                    probe_evidence={"evidence": first_masked_line or "Stack trace or database/framework error in response body"},
+                    diff_fields=sorted(list(verbose_affected)),
+                    repro_curl=f"curl -s {self.base_url}{ep_path}",
+                    reproduction_steps=[
+                        f"Observed stack trace or error diagnostic on {len(verbose_affected)} endpoint(s)."
+                    ]
+                )
+                findings.append(f_verbose)
+                await self._confirm(on_event, f_verbose, f"Passive Misconfiguration: Verbose error output on {len(verbose_affected)} endpoint(s)")
+
+            # 3. Version disclosure check: Server or X-Powered-By containing version number -> LOW
+            version_affected = set()
+            disclosed_header_val = None
+            for (step, res) in recorded_responses:
+                h = {k.lower(): str(v).strip() for k, v in res.sanitized_headers.items()}
+                s = h.get("server", "")
+                p = h.get("x-powered-by", "")
+                found_v = []
+                if s and VERSION_REGEX.search(s):
+                    found_v.append(f"Server: {s}")
+                if p and VERSION_REGEX.search(p):
+                    found_v.append(f"X-Powered-By: {p}")
+                if found_v:
+                    op = op_map.get(step.operation_id)
+                    version_affected.add(f"{step.method} {op.path if op else step.url}")
+                    if not disclosed_header_val:
+                        disclosed_header_val = ", ".join(found_v)
+            if version_affected:
+                f_version = Finding(
+                    id=f"fnd_misconfig_version_{uuid.uuid4().hex[:6]}",
+                    category="MISCONFIG",
+                    endpoint="Version Disclosure",
+                    method="ALL",
+                    resource_type="Version Disclosure",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="LOW",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_misconfig_version",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Server / Framework Version Disclosure"),
+                        operation_id="version_disclosure_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["Version Disclosure (Server / X-Powered-By header)"],
+                    control_evidence={},
+                    probe_evidence={"evidence": disclosed_header_val or "Server/framework version disclosed in HTTP headers"},
+                    diff_fields=sorted(list(version_affected)),
+                    repro_curl=f"curl -s -I {self.base_url}",
+                    reproduction_steps=[
+                        f"Observed version disclosure in HTTP headers on {len(version_affected)} endpoint(s)."
+                    ]
+                )
+                findings.append(f_version)
+                await self._confirm(on_event, f_version, f"Passive Misconfiguration: Version disclosure on {len(version_affected)} endpoint(s)")
+
+            # 4. Missing Security Headers
+            # 4a: Missing X-Content-Type-Options: nosniff on JSON responses -> LOW
+            nosniff_affected = set()
+            for (step, res) in recorded_responses:
+                h = {k.lower(): str(v).strip() for k, v in res.sanitized_headers.items()}
+                ct = h.get("content-type", "").lower()
+                is_json = "application/json" in ct or isinstance(res.body, (dict, list))
+                if is_json and "nosniff" not in h.get("x-content-type-options", "").lower():
+                    op = op_map.get(step.operation_id)
+                    nosniff_affected.add(f"{step.method} {op.path if op else step.url}")
+            if nosniff_affected:
+                f_nosniff = Finding(
+                    id=f"fnd_misconfig_nosniff_{uuid.uuid4().hex[:6]}",
+                    category="MISCONFIG",
+                    endpoint="Missing X-Content-Type-Options",
+                    method="ALL",
+                    resource_type="Security Headers",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="LOW",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_misconfig_nosniff",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Missing X-Content-Type-Options Header"),
+                        operation_id="nosniff_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["Missing Security Header: X-Content-Type-Options: nosniff on JSON responses"],
+                    control_evidence={},
+                    probe_evidence={"evidence": "Missing 'X-Content-Type-Options: nosniff' header on JSON response(s)"},
+                    diff_fields=sorted(list(nosniff_affected)),
+                    repro_curl=f"curl -s -I {self.base_url}",
+                    reproduction_steps=[
+                        f"Observed missing X-Content-Type-Options header on {len(nosniff_affected)} endpoint(s)."
+                    ]
+                )
+                findings.append(f_nosniff)
+                await self._confirm(on_event, f_nosniff, f"Passive Misconfiguration: Missing X-Content-Type-Options on {len(nosniff_affected)} endpoint(s)")
+
+            # 4b: Missing Strict-Transport-Security only when base_url is https -> LOW
+            if self.base_url.lower().startswith("https://"):
+                hsts_affected = set()
+                for (step, res) in recorded_responses:
+                    h = {k.lower(): str(v).strip() for k, v in res.sanitized_headers.items()}
+                    if "strict-transport-security" not in h:
+                        op = op_map.get(step.operation_id)
+                        hsts_affected.add(f"{step.method} {op.path if op else step.url}")
+                if hsts_affected:
+                    f_hsts = Finding(
+                        id=f"fnd_misconfig_hsts_{uuid.uuid4().hex[:6]}",
+                        category="MISCONFIG",
+                        endpoint="Missing Strict-Transport-Security",
+                        method="ALL",
+                        resource_type="Security Headers",
+                        status=FindingStatus.CONFIRMED,
+                        confidence=1.0,
+                        severity="LOW",
+                        identities={},
+                        hypothesis=Hypothesis(
+                            id="hyp_misconfig_hsts",
+                            rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Missing Strict-Transport-Security Header"),
+                            operation_id="hsts_check",
+                            confidence=1.0,
+                            provenance=Provenance.OBSERVED
+                        ),
+                        graph_path=["Missing Security Header: Strict-Transport-Security on HTTPS"],
+                        control_evidence={},
+                        probe_evidence={"evidence": "Missing Strict-Transport-Security header on HTTPS endpoint(s)"},
+                        diff_fields=sorted(list(hsts_affected)),
+                        repro_curl=f"curl -s -I {self.base_url}",
+                        reproduction_steps=[
+                            f"Observed missing HSTS header on {len(hsts_affected)} endpoint(s)."
+                        ]
+                    )
+                    findings.append(f_hsts)
+                    await self._confirm(on_event, f_hsts, f"Passive Misconfiguration: Missing Strict-Transport-Security on {len(hsts_affected)} endpoint(s)")
+
+            # 5. Authenticated JSON responses carrying owner-sensitive values without Cache-Control containing no-store or private -> LOW
+            cache_affected = set()
+            for (step, res) in recorded_responses:
+                is_auth_step = (
+                    step.identity_id in (user_a.identity_id, getattr(admin_user, "identity_id", None))
+                    or any(k.lower() == "authorization" for k in step.headers.keys())
+                )
+                if not is_auth_step or not (200 <= res.status_code < 300) or not isinstance(res.body, (dict, list)):
+                    continue
+                sensitive_vals = DifferentialVerifier._extract_sensitive_values(res.body)
+                if not sensitive_vals:
+                    continue
+                h = {k.lower(): str(v).strip() for k, v in res.sanitized_headers.items()}
+                cc = h.get("cache-control", "").lower()
+                if "no-store" not in cc and "private" not in cc:
+                    op = op_map.get(step.operation_id)
+                    cache_affected.add(f"{step.method} {op.path if op else step.url}")
+            if cache_affected:
+                f_cache = Finding(
+                    id=f"fnd_misconfig_cache_{uuid.uuid4().hex[:6]}",
+                    category="MISCONFIG",
+                    endpoint="Cache-Control",
+                    method="ALL",
+                    resource_type="Cache-Control Security",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="LOW",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_misconfig_cache",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Insecure Caching of Sensitive Data"),
+                        operation_id="cache_control_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["Insecure Cache-Control on Authenticated Sensitive Data"],
+                    control_evidence={},
+                    probe_evidence={"evidence": "Authenticated response carrying sensitive data lacks 'no-store' or 'private' in Cache-Control"},
+                    diff_fields=sorted(list(cache_affected)),
+                    repro_curl=f"curl -s -I {self.base_url}",
+                    reproduction_steps=[
+                        f"Observed missing no-store/private Cache-Control for sensitive data on {len(cache_affected)} endpoint(s)."
+                    ]
+                )
+                findings.append(f_cache)
+                await self._confirm(on_event, f_cache, f"Passive Misconfiguration: Insecure Cache-Control on sensitive data on {len(cache_affected)} endpoint(s)")
+
+            # 6. Deprecated endpoint still live (INVENTORY) -> LOW
+            deprecated_affected = set()
+            for (step, res) in recorded_responses:
+                op = op_map.get(step.operation_id)
+                if op and getattr(op, "deprecated", False) and 200 <= res.status_code < 300:
+                    deprecated_affected.add(f"{op.method} {op.path}")
+            if deprecated_affected:
+                f_dep = Finding(
+                    id=f"fnd_inventory_deprecated_{uuid.uuid4().hex[:6]}",
+                    category="INVENTORY",
+                    endpoint="Deprecated Endpoints Live",
+                    method="ALL",
+                    resource_type="Deprecated Endpoint",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="LOW",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_inventory_deprecated",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Deprecated Endpoint Still Live"),
+                        operation_id="deprecated_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["Deprecated Endpoint Still Live (OpenAPI deprecated: true answered 2xx)"],
+                    control_evidence={},
+                    probe_evidence={"evidence": "deprecated endpoint still live"},
+                    diff_fields=sorted(list(deprecated_affected)),
+                    repro_curl=f"curl -s {self.base_url}",
+                    reproduction_steps=[
+                        f"Observed 2xx response on deprecated endpoint(s): {', '.join(sorted(deprecated_affected))}."
+                    ]
+                )
+                findings.append(f_dep)
+                await self._confirm(on_event, f_dep, f"API Inventory: Deprecated endpoint still live: {', '.join(sorted(deprecated_affected))}")
+
+            # 7. Undocumented response status code (INVENTORY) -> INFO
+            undoc_affected = set()
+            for (step, res) in recorded_responses:
+                if res.status_code == 0 or res.status_code in {401, 403, 404, 422}:
+                    continue
+                op = op_map.get(step.operation_id)
+                if not op:
+                    continue
+                documented = set(getattr(op, "documented_status_codes", [])) | set(op.response_schemas.keys())
+                if "default" in documented:
+                    continue
+                if str(res.status_code) not in documented:
+                    undoc_affected.add(f"{op.method} {op.path} (HTTP {res.status_code})")
+            if undoc_affected:
+                f_undoc = Finding(
+                    id=f"fnd_inventory_undocumented_{uuid.uuid4().hex[:6]}",
+                    category="INVENTORY",
+                    endpoint="Undocumented Status Codes",
+                    method="ALL",
+                    resource_type="Undocumented Status Code",
+                    status=FindingStatus.CONFIRMED,
+                    confidence=1.0,
+                    severity="INFO",
+                    identities={},
+                    hypothesis=Hypothesis(
+                        id="hyp_inventory_undocumented",
+                        rule=Rule(rule_type=RuleType.AUTH_REQUIRED, resource_type="Undocumented Response Status Code"),
+                        operation_id="undocumented_status_check",
+                        confidence=1.0,
+                        provenance=Provenance.OBSERVED
+                    ),
+                    graph_path=["Undocumented Response Status Code (status code not declared in OpenAPI responses)"],
+                    control_evidence={},
+                    probe_evidence={"evidence": f"Undocumented response status code(s): {', '.join(sorted(undoc_affected))}"},
+                    diff_fields=sorted(list(undoc_affected)),
+                    repro_curl=f"curl -s {self.base_url}",
+                    reproduction_steps=[
+                        f"Observed undocumented response status code(s): {', '.join(sorted(undoc_affected))}."
+                    ]
+                )
+                findings.append(f_undoc)
+                await self._confirm(on_event, f_undoc, f"API Inventory: Undocumented status codes: {', '.join(sorted(undoc_affected))}")
 
         unique: Dict[tuple, Finding] = {}  # one finding per category/method/endpoint/diff_fields
         for f in findings:
@@ -978,11 +1360,13 @@ class GraphGuidedScanner:
 async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.yaml", enable_mutations: bool = False,
                       budget: int = 30, on_event: Optional[Callable] = None, client: Optional[httpx.AsyncClient] = None,
                       operations: Optional[List[Operation]] = None, enable_bopla: bool = True,
-                      enable_auth: bool = True) -> List[Finding]:
+                      enable_auth: bool = True, enable_passive: Optional[bool] = None) -> List[Finding]:
     """Scan an API described by a TargetProfile."""
     from apiguard.engine.auth import AuthRegistry
 
     profile = load_target_profile(target_profile) if isinstance(target_profile, str) else target_profile
+    if enable_passive is None:
+        enable_passive = getattr(profile, "passive_checks", True)
     hosts = set(profile.allowed_hosts) if profile.allowed_hosts else {"localhost", "127.0.0.1"}
     target_host = (urlparse(profile.base_url).hostname or "").lower()
     if target_host not in {h.lower() for h in hosts}:
@@ -1008,4 +1392,4 @@ async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.
     scanner = GraphGuidedScanner(executor=executor, base_url=profile.base_url, target_profile=profile)
     return await scanner.run_scan(operations=profile.load_operations() if operations is None else operations, user_a=user_a, user_b=user_b,
                                   admin_user=admin_user, enable_mutations=enable_mutations, enable_bopla=enable_bopla,
-                                  enable_auth=enable_auth, on_event=on_event, client=client)
+                                  enable_auth=enable_auth, enable_passive=enable_passive, on_event=on_event, client=client)

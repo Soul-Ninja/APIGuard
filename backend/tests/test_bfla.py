@@ -242,7 +242,8 @@ async def test_admin_control_non_2xx_recorded_as_skip():
         skip = next((s for s in scanner.coverage.skipped if s.resource == "GET /admin/restricted"), None)
         assert skip is not None
         assert "HTTP 403" in skip.reason
-        assert len(findings) == 0
+        bfla_findings = [f for f in findings if getattr(f, "category", "") == "BFLA"]
+        assert len(bfla_findings) == 0
 
 
 @pytest.mark.asyncio

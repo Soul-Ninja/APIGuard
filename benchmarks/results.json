@@ -1,19 +1,19 @@
 {
-  "timestamp": "2026-11-10T14:58:26Z",
+  "timestamp": "2026-11-10T20:23:31Z",
   "target": "http://127.0.0.1:8000/target",
-  "variants_tested": 8,
+  "variants_tested": 9,
   "aggregate_metrics": {
     "graph_guided": {
-      "total_confirmed": 10,
-      "total_ground_truth": 10,
+      "total_confirmed": 13,
+      "total_ground_truth": 13,
       "aggregate_recall": 1.0,
-      "requests_per_finding": 13.0
+      "requests_per_finding": 11.0
     },
     "baseline": {
       "total_confirmed": 4,
-      "total_ground_truth": 10,
-      "aggregate_recall": 0.4,
-      "requests_per_finding": 14.0
+      "total_ground_truth": 13,
+      "aggregate_recall": 0.31,
+      "requests_per_finding": 15.8
     }
   },
   "variants": {
@@ -26,8 +26,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 15.0,
-        "duration_ms": 15.0
+        "avg_ms_per_finding": 16.9,
+        "duration_ms": 16.9
       },
       "baseline": {
         "confirmed": 1,
@@ -35,8 +35,8 @@
         "precision": 1.0,
         "requests": 7,
         "req_per_finding": 7.0,
-        "avg_ms_per_finding": 6.0,
-        "duration_ms": 6.0
+        "avg_ms_per_finding": 5.5,
+        "duration_ms": 5.5
       }
     },
     "variant_b": {
@@ -48,8 +48,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 13.5,
-        "duration_ms": 13.5
+        "avg_ms_per_finding": 14.7,
+        "duration_ms": 14.7
       },
       "baseline": {
         "confirmed": 0,
@@ -58,7 +58,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 3.3
+        "duration_ms": 5.5
       }
     },
     "variant_c": {
@@ -70,8 +70,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 10.4,
-        "duration_ms": 10.4
+        "avg_ms_per_finding": 15.6,
+        "duration_ms": 15.6
       },
       "baseline": {
         "confirmed": 1,
@@ -79,8 +79,8 @@
         "precision": 1.0,
         "requests": 7,
         "req_per_finding": 7.0,
-        "avg_ms_per_finding": 3.2,
-        "duration_ms": 3.2
+        "avg_ms_per_finding": 5.7,
+        "duration_ms": 5.7
       }
     },
     "variant_all": {
@@ -92,8 +92,8 @@
         "precision": 1.0,
         "requests": 19,
         "req_per_finding": 6.3,
-        "avg_ms_per_finding": 5.4,
-        "duration_ms": 16.2
+        "avg_ms_per_finding": 5.7,
+        "duration_ms": 17.1
       },
       "baseline": {
         "confirmed": 2,
@@ -101,8 +101,8 @@
         "precision": 1.0,
         "requests": 7,
         "req_per_finding": 3.5,
-        "avg_ms_per_finding": 2.5,
-        "duration_ms": 4.9
+        "avg_ms_per_finding": 2.8,
+        "duration_ms": 5.6
       }
     },
     "variant_secure": {
@@ -115,7 +115,7 @@
         "requests": 13,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 9.3
+        "duration_ms": 12.9
       },
       "baseline": {
         "confirmed": 0,
@@ -124,7 +124,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 3.2
+        "duration_ms": 5.2
       }
     },
     "variant_bfla": {
@@ -136,8 +136,8 @@
         "precision": 1.0,
         "requests": 15,
         "req_per_finding": 15.0,
-        "avg_ms_per_finding": 10.0,
-        "duration_ms": 10.0
+        "avg_ms_per_finding": 15.8,
+        "duration_ms": 15.8
       },
       "baseline": {
         "confirmed": 0,
@@ -146,7 +146,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 3.1
+        "duration_ms": 5.8
       }
     },
     "variant_bopla": {
@@ -158,8 +158,8 @@
         "precision": 1.0,
         "requests": 17,
         "req_per_finding": 8.5,
-        "avg_ms_per_finding": 5.3,
-        "duration_ms": 10.6
+        "avg_ms_per_finding": 8.8,
+        "duration_ms": 17.5
       },
       "baseline": {
         "confirmed": 0,
@@ -168,7 +168,7 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 3.1
+        "duration_ms": 4.9
       }
     },
     "variant_auth": {
@@ -180,8 +180,8 @@
         "precision": 1.0,
         "requests": 21,
         "req_per_finding": 21.0,
-        "avg_ms_per_finding": 12.9,
-        "duration_ms": 12.9
+        "avg_ms_per_finding": 20.0,
+        "duration_ms": 20.0
       },
       "baseline": {
         "confirmed": 0,
@@ -190,7 +190,29 @@
         "requests": 7,
         "req_per_finding": null,
         "avg_ms_per_finding": null,
-        "duration_ms": 3.1
+        "duration_ms": 6.0
+      }
+    },
+    "variant_misconfig": {
+      "description": "Security misconfiguration: CORS wildcard with credentials, verbose error traceback on summary, and version disclosure header",
+      "ground_truth_count": 3,
+      "graph_guided": {
+        "confirmed": 3,
+        "recall": 1.0,
+        "precision": 1.0,
+        "requests": 13,
+        "req_per_finding": 4.3,
+        "avg_ms_per_finding": 4.5,
+        "duration_ms": 13.6
+      },
+      "baseline": {
+        "confirmed": 0,
+        "recall": 0.0,
+        "precision": null,
+        "requests": 7,
+        "req_per_finding": null,
+        "avg_ms_per_finding": null,
+        "duration_ms": 5.9
       }
     }
   },
@@ -202,7 +224,7 @@
       "recall": 0.0,
       "precision": null,
       "requests": 6,
-      "duration_ms": 5.3,
+      "duration_ms": 7.5,
       "note": "Measured: with propagation off the scanner stops after the main read route and never tests the nested routes."
     },
     "oracle_baseline_on_variant_b": {
@@ -212,7 +234,7 @@
       "recall": 1.0,
       "precision": 1.0,
       "requests": 9,
-      "duration_ms": 4.1,
+      "duration_ms": 7.1,
       "note": "Measured: baseline given a hand-written ownership rule for every route."
     }
   }

@@ -161,6 +161,21 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 if getattr(user_a, "expired_token", None):
                     print(f"  - [probe_expired_token] {op.method} {url} (Authorization: Bearer <EXPIRED_TOKEN>)")
 
+        if getattr(profile, "passive_checks", True):
+            print("\n" + "=" * 65)
+            print("  PASSIVE CHECKS (OWASP API8/API9)")
+            print("=" * 65)
+            print("  Passive inspection enabled (0 extra requests):")
+            print("  - [MISCONFIG] CORS wildcard origin with credentials (MEDIUM)")
+            print("  - [MISCONFIG] Verbose stack traces / framework errors (MEDIUM)")
+            print("  - [MISCONFIG] Server / X-Powered-By version disclosure (LOW)")
+            print("  - [MISCONFIG] Missing X-Content-Type-Options: nosniff (LOW)")
+            if target_url.lower().startswith("https://"):
+                print("  - [MISCONFIG] Missing Strict-Transport-Security (LOW)")
+            print("  - [MISCONFIG] Authenticated sensitive response caching (LOW)")
+            print("  - [INVENTORY] Live deprecated endpoints (LOW)")
+            print("  - [INVENTORY] Undocumented response status codes (INFO)")
+
         print("\n[SUCCESS] Dry-run completed. All prerequisite paths validated.")
         return 0
 
@@ -243,7 +258,8 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
     t0 = asyncio.get_event_loop().time()
     try:
         enable_auth = getattr(profile, "auth_checks", True)
-        findings = await scanner.run_scan(operations, user_a, user_b, admin_user=admin_user, enable_mutations=enable_mutations, enable_auth=enable_auth, client=client)
+        enable_passive = getattr(profile, "passive_checks", True)
+        findings = await scanner.run_scan(operations, user_a, user_b, admin_user=admin_user, enable_mutations=enable_mutations, enable_auth=enable_auth, enable_passive=enable_passive, client=client)
     except Exception as e:
         print(f"[ERROR] Scan execution failed: {e}", file=sys.stderr)
         if client:
@@ -260,11 +276,13 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         and len(getattr(coverage, "auth_operations_tested", [])) == 0
     )
 
-    confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
+    # passive MISCONFIG/INVENTORY findings are hygiene, so they are counted apart from vulnerabilities
+    confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED and getattr(f, "category", "BOLA") not in ("MISCONFIG", "INVENTORY")]
+    passive_count = sum(1 for f in findings if getattr(f, "category", "") in ("MISCONFIG", "INVENTORY"))
 
     if not zero_tested:
         print("\n" + "=" * 65)
-        print(f"  AUDIT COMPLETE: {len(confirmed_findings)} CONFIRMED VULNERABILITIES ({duration_ms}ms)")
+        print(f"  AUDIT COMPLETE: {len(confirmed_findings)} CONFIRMED VULNERABILITIES, {passive_count} PASSIVE FINDINGS ({duration_ms}ms)")
         print("=" * 65)
 
         bola_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BOLA"]
@@ -322,12 +340,13 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 print(f"    Repro Curl:    {f.repro_curl}")
 
         for f in auth_findings:
+            diffs_clean = [df.removeprefix("tampering: ") if df.startswith("tampering: ") else df for df in f.diff_fields]
             if f.status == FindingStatus.POTENTIAL:
                 print(f"\n[?] NEEDS REVIEW: {f.id} — {f.severity}")
                 print(f"    Endpoint:      {f.method} {f.endpoint}")
                 print(f"    Status:        POTENTIAL (tampered request returned 2xx but body differed or indicated error)")
                 print(f"    Confidence:    {f.confidence}")
-                print(f"    Tampering:     {', '.join(f.diff_fields)}")
+                print(f"    Tampering:     {', '.join(diffs_clean)}")
                 print(f"    Repro Curl:    {f.repro_curl}")
             else:
                 print(f"\n[!] BROKEN AUTHENTICATION FINDING: {f.id} — {f.severity}")
@@ -335,8 +354,25 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 desc = "Broken Authentication: Tampered request accepted"
                 print(f"    Status:        {f.status.value.upper()} ({desc})")
                 print(f"    Confidence:    {f.confidence}")
-                print(f"    Tampering:     {', '.join(f.diff_fields)}")
+                print(f"    Tampering:     {', '.join(diffs_clean)}")
                 print(f"    Repro Curl:    {f.repro_curl}")
+
+        passive_findings = [f for f in findings if getattr(f, "category", "") in ("MISCONFIG", "INVENTORY")]
+        if passive_findings:
+            print("\n" + "=" * 65)
+            print("  PASSIVE CHECKS (OWASP API8/API9)")
+            print("=" * 65)
+            for f in passive_findings:
+                desc = f.hypothesis.rule.resource_type if f.hypothesis and f.hypothesis.rule else f.category
+                print(f"\n[!] {f.category} FINDING: {f.id} — {f.severity} ({desc})")
+                eps = f.diff_fields
+                if len(eps) <= 10:
+                    ep_str = ", ".join(eps)
+                else:
+                    ep_str = ", ".join(eps[:10]) + f", +{len(eps) - 10} more"
+                print(f"    Affected:      {ep_str}")
+                evidence = f.probe_evidence.get("evidence", "") or f.probe_evidence
+                print(f"    Evidence:      {evidence}")
 
     if client:
         await client.aclose()
@@ -352,8 +388,11 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         if getattr(coverage, "auth_operations_found", None):
             print(f"[*] AUTH Coverage: Tested {len(coverage.auth_operations_tested)} of {len(coverage.auth_operations_found)} auth checks.")
 
-    confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
-    if len(confirmed_findings) > 0:
+    active_confirmed = [
+        f for f in findings
+        if f.status == FindingStatus.CONFIRMED and getattr(f, "category", "BOLA") in ("BOLA", "BFLA", "BOPLA", "AUTH")
+    ]
+    if len(active_confirmed) > 0:
         return 1
 
     if zero_tested:
@@ -362,8 +401,10 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         sys.stderr.flush()
         return 2
 
-    if coverage and len(coverage.skipped) > 0:
-        print(f"[WARNING] Partial coverage: {len(coverage.skipped)} of {len(coverage.resources_found)} resources were skipped.")
+    # BFLA/BOPLA/AUTH check skips are also in coverage.skipped; count only real resources here
+    skipped_resources = [s for s in coverage.skipped if s.resource in coverage.resources_found] if coverage else []
+    if skipped_resources:
+        print(f"[WARNING] Partial coverage: {len(skipped_resources)} of {len(coverage.resources_found)} resources were skipped.")
 
     return 0
 

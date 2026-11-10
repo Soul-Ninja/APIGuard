@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from apiguard.engine.cli import run_cli_scan
 from apiguard.engine.target import load_target_profile, TargetProfile
 from apiguard.engine.scanner import scan_target
+from apiguard.engine.models import FindingStatus
 
 TEST_PORT = 8126
 BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
@@ -17,6 +18,15 @@ orders_app = FastAPI()
 orders_db = {}
 orders_defect_bopla = False
 orders_defect_auth = False
+orders_defect_misconfig = False
+
+@orders_app.middleware("http")
+async def orders_misconfig_middleware(request, call_next):
+    response = await call_next(request)
+    if orders_defect_misconfig:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 class LoginRequest(BaseModel):
@@ -265,8 +275,9 @@ resources:
 
     profile = load_target_profile(str(profile_file))
     findings = await scan_target(target_profile=profile)
-    assert len(findings) == 1
-    f = findings[0]
+    bola_findings = [f for f in findings if getattr(f, "category", "") == "BOLA"]
+    assert len(bola_findings) == 1
+    f = bola_findings[0]
     assert f.status.value == "confirmed"
     assert f.endpoint == "/orders/{order_id}"
     assert f.resource_type == "Orders"
@@ -667,6 +678,57 @@ resources:
         assert "GET /orders/{order_id}" in captured
     finally:
         orders_defect_auth = False
+
+
+@pytest.mark.asyncio
+async def test_orders_cors_misconfiguration_found(tmp_path, orders_server, capsys):
+    global orders_defect_misconfig
+    orders_defect_misconfig = True
+    try:
+        spec_file = tmp_path / "orders_spec.yaml"
+        spec_file.write_text(ORDERS_SPEC, encoding="utf-8")
+
+        profile_content = f"""
+base_url: "{orders_server}"
+spec_path: "{spec_file.as_posix()}"
+allowed_hosts:
+  - "127.0.0.1"
+  - "localhost"
+request_budget: 30
+owner: "customer_a"
+attacker: "customer_b"
+login:
+  path: "/auth/login"
+  body_template:
+    username: "{{username}}"
+    password: "{{password}}"
+  token_path: "access_token"
+  user_id_path: "uid"
+identities:
+  - name: "customer_a"
+    username: "alice@orders.test"
+    password: "pwd"
+  - name: "customer_b"
+    username: "bob@orders.test"
+    password: "pwd"
+resources:
+  orders:
+    id_path: "id"
+    owner_field: "customer_id"
+    sensitive_fields:
+      - "customer"
+"""
+        profile_file = tmp_path / "orders_profile_cors.yaml"
+        profile_file.write_text(profile_content, encoding="utf-8")
+
+        profile = load_target_profile(str(profile_file))
+        findings = await scan_target(target_profile=profile)
+        cors_f = [f for f in findings if getattr(f, "category", "") == "MISCONFIG" and f.endpoint == "CORS"]
+        assert len(cors_f) == 1
+        assert cors_f[0].severity == "MEDIUM"
+        assert cors_f[0].status == FindingStatus.CONFIRMED
+    finally:
+        orders_defect_misconfig = False
 
 
 @pytest.mark.asyncio

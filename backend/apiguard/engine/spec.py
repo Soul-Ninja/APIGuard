@@ -308,6 +308,7 @@ class OpenAPIParser:
                     is_public = (root_security is None or len(root_security) == 0)
 
                 active_sec = op_security if op_security is not None else (root_security or [])
+                raw_responses = resolved_op.get("responses") or op.get("responses") or {}
                 operations.append(Operation(
                     id=op_id,
                     method=method.upper(),
@@ -322,6 +323,8 @@ class OpenAPIParser:
                     tags=op.get("tags", []),
                     summary=op.get("summary"),
                     is_public=is_public,
+                    deprecated=bool(op.get("deprecated", False)),
+                    documented_status_codes=[str(c) for c in raw_responses.keys()],
                     request_schema=self._json_schema(resolved_op.get("requestBody", {})) or None,
                     response_schemas=resolved_responses,
                 ))

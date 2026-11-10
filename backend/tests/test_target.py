@@ -212,6 +212,7 @@ paths:
     profile = TargetProfile(
         base_url="http://testserver",
         allowed_hosts=["127.0.0.1", "localhost", "testserver"],
+        passive_checks=False,
         identities=[
             IdentityConfig(name="user_a", headers={"Authorization": "Bearer tok_a"}),
             IdentityConfig(name="user_b", headers={"Authorization": "Bearer tok_b"})

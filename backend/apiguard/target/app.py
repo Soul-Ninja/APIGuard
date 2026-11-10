@@ -1,12 +1,26 @@
 import base64
 import json
 from typing import Optional, Dict, Any
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from apiguard.target.data import TOKEN_TO_USER, PROJECTS_STORE, SEEDED_USERS, reset_db
 from apiguard.target.config import get_target_config
 
 target_app = FastAPI(title="Vulnerable Target Service", version="1.0.0")
+
+@target_app.middleware("http")
+async def apply_misconfig_middleware(request: Request, call_next):
+    response = await call_next(request)
+    cfg = get_target_config()
+    if cfg.defect_misconfig and not cfg.patched_mode:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["X-Powered-By"] = "DemoAPI/1.4.2"
+    else:
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store, private"
+    return response
 
 class LoginInput(BaseModel):
     username: str
@@ -176,6 +190,16 @@ def delete_project(project_id: str, authorization: Optional[str] = Header(None))
 def get_project_summary(project_id: str, authorization: Optional[str] = Header(None)):
     """Trap 1: Returns 200 with empty body for non-owners (must NOT be confirmed BOLA)"""
     cfg = get_target_config()
+    if cfg.defect_misconfig and not cfg.patched_mode:
+        tok = (authorization or "").replace("Bearer ", "").strip()
+        u = TOKEN_TO_USER.get(tok)
+        if u and (u.get("id") == "usr_taaran_202" or u.get("username") == "taaran@adversary.io"):
+            tb = """Traceback (most recent call last):
+  File "/app/target/app.py", line 185, in get_project_summary
+    summary = calculate_metrics(project_id, user_id=u["id"])
+ZeroDivisionError: division by zero"""
+            return PlainTextResponse(content=tb, status_code=500)
+
     is_auth_defective = cfg.defect_auth and not cfg.patched_mode
     if is_auth_defective:
         # Accepts requests with no token or an alg:none JWT
