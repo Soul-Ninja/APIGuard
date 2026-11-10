@@ -1,7 +1,8 @@
+import json
 import re
 import time
 import uuid
-from typing import List, Dict, Any, Optional, Callable, Union
+from typing import List, Dict, Any, Optional, Callable, Union, Tuple
 from urllib.parse import urlparse
 import httpx
 from apiguard.engine.models import (
@@ -12,7 +13,10 @@ from apiguard.engine.graph import ResourceGraph
 from apiguard.engine.inference import InferenceEngine
 from apiguard.engine.executor import SafeExecutor, SecurityViolationError
 from apiguard.engine.verifier import DifferentialVerifier
-from apiguard.engine.target import TargetProfile, load_target_profile, get_path, build_body_from_schema, is_admin_operation
+from apiguard.engine.target import (
+    TargetProfile, load_target_profile, get_path, build_body_from_schema,
+    is_admin_operation, is_documented_writable, get_schema_properties
+)
 
 DEFAULT_BASE = "http://127.0.0.1:8000/target"
 OK = lambda res: 200 <= res.status_code < 300
@@ -163,7 +167,8 @@ class GraphGuidedScanner:
     async def run_scan(self, operations: List[Operation], user_a: IdentityProfile, user_b: IdentityProfile,
                        enable_mutations: bool = False, on_event: Optional[Callable] = None,
                        client: Optional[httpx.AsyncClient] = None,
-                       admin_user: Optional[IdentityProfile] = None) -> List[Finding]:
+                       admin_user: Optional[IdentityProfile] = None,
+                       enable_bopla: bool = True) -> List[Finding]:
         self.graph.build_from_operations(operations)
         self.coverage = ScanCoverage()
 
@@ -226,7 +231,13 @@ class GraphGuidedScanner:
 
         findings: List[Finding] = []
         harvested_ids: Dict[str, str] = {}
-        ex = lambda step: self._execute_and_emit(step, on_event, client)
+        harvested_for_bopla: List[Tuple[Any, str, Operation, Operation, str, str, Any, str]] = []
+        recorded_responses: List[Tuple[PlanStep, Any]] = []
+
+        async def ex(step: PlanStep):
+            res = await self._execute_and_emit(step, on_event, client)
+            recorded_responses.append((step, res))
+            return res
 
         for res_node in resource_nodes:
             name = res_node.metadata.get("resource_name", "")
@@ -311,6 +322,7 @@ class GraphGuidedScanner:
             probe = await ex(probe_step)
             if name not in self.coverage.resources_tested:
                 self.coverage.resources_tested.append(name)
+            harvested_for_bopla.append((res_node, name, producer, primary, id_path, owner_field, body, str(obj_id)))
 
             hyp = self.inference.record_control_observation(primary.operation_id, ctrl, probe)
             if hyp:
@@ -507,9 +519,281 @@ class GraphGuidedScanner:
                 elif probe_res.status_code in {401, 403, 404}:
                     await self._denied(on_event, op, probe_res, "B", f"[BFLA] Probe denied with HTTP {probe_res.status_code} (Secure)")
 
-        unique: Dict[tuple, Finding] = {}  # one finding per category/method/endpoint, first wins
+        # ---- Phase: BOPLA (OWASP API3 - Broken Object Property Level Authorization) ----
+        if enable_bopla:
+            # Part A - Mass assignment (active)
+            for (res_node, name, producer, primary, id_path, owner_field, body, obj_id) in harvested_for_bopla:
+                check_name = f"Mass Assignment: {producer.method} {producer.path}"
+                if check_name not in self.coverage.bopla_operations_found:
+                    self.coverage.bopla_operations_found.append(check_name)
+
+                injected_fields: Dict[str, Any] = {
+                    "role": "admin",
+                    "is_admin": True,
+                    owner_field: user_b.identity_id
+                }
+                if self.target_profile and getattr(self.target_profile, "mass_assignment_fields", None):
+                    extra_ma = self.target_profile.mass_assignment_fields
+                    if isinstance(extra_ma, dict):
+                        injected_fields.update(extra_ma)
+                    elif isinstance(extra_ma, list):
+                        for item in extra_ma:
+                            if isinstance(item, dict):
+                                injected_fields.update(item)
+                            elif isinstance(item, str):
+                                injected_fields[item] = "admin"
+
+                inj_body = dict(body) if isinstance(body, dict) else {}
+                inj_body.update(injected_fields)
+
+                inj_step = self._step(f"bopla_inject_{producer.operation_id}", user_a, producer, "probe_mass_assignment", body=inj_body)
+                inj_res = await ex(inj_step)
+
+                if not (200 <= inj_res.status_code < 300):
+                    reason = f"HTTP status {inj_res.status_code} on create injection" if inj_res.status_code > 0 else "connection error on create injection"
+                    self.coverage.skipped.append(ResourceSkip(resource=check_name, reason=reason))
+                    continue
+
+                inj_id = get_path(inj_res.body, id_path) or obj_id
+                read_step = self._step(f"bopla_read_{primary.operation_id}", user_a, primary, "control_owner", inj_id)
+                read_res = await ex(read_step)
+
+                if not (200 <= read_res.status_code < 300):
+                    reason = f"read-back failed (HTTP {read_res.status_code})" if read_res.status_code > 0 else "connection error on read-back"
+                    self.coverage.skipped.append(ResourceSkip(resource=check_name, reason=reason))
+                    continue
+
+                if check_name not in self.coverage.bopla_operations_tested:
+                    self.coverage.bopla_operations_tested.append(check_name)
+
+                persisted_undocumented = []
+                echoed_undocumented = []
+                for k, expected_v in injected_fields.items():
+                    if is_documented_writable(producer.request_schema, k):
+                        continue
+                    actual_v = get_path(read_res.body, k) if isinstance(read_res.body, dict) else None
+                    if actual_v is not None and str(actual_v) == str(expected_v):
+                        persisted_undocumented.append(k)
+                    else:
+                        echo_v = get_path(inj_res.body, k) if isinstance(inj_res.body, dict) else None
+                        if echo_v is not None and str(echo_v) == str(expected_v):
+                            echoed_undocumented.append(k)
+
+                if persisted_undocumented:
+                    f = Finding(
+                        id=f"fnd_bopla_ma_{uuid.uuid4().hex[:6]}",
+                        category="BOPLA",
+                        severity="HIGH",
+                        endpoint=producer.path,
+                        method=producer.method,
+                        resource_type=res_node.label or name.capitalize(),
+                        status=FindingStatus.CONFIRMED,
+                        confidence=0.95,
+                        identities={"owner": user_a.identity_id, "probe": user_b.identity_id},
+                        hypothesis=Hypothesis(
+                            id=f"hyp_bopla_{producer.operation_id}",
+                            rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type=res_node.label or name.capitalize(), owner_field=owner_field),
+                            operation_id=producer.operation_id,
+                            confidence=0.95,
+                            provenance=Provenance.DOCUMENTED
+                        ),
+                        graph_path=[f"{producer.method} {producer.path} (Mass Assignment: Injected Undocumented Fields Persisted)"],
+                        control_evidence={"status": inj_res.status_code, "injected_fields": list(injected_fields.keys())},
+                        probe_evidence={"status": read_res.status_code, "persisted_fields": persisted_undocumented},
+                        diff_fields=persisted_undocumented,
+                        repro_curl=f"curl -X {producer.method} '{inj_step.url}' -H 'Authorization: Bearer <USER_A_TOKEN>' -H 'Content-Type: application/json' -d '{json.dumps(inj_body)}'",
+                        reproduction_steps=[
+                            f"1. As owner ({user_a.identity_id}) with bearer token <USER_A_TOKEN>, send {producer.method} {producer.path} with fields: {', '.join(persisted_undocumented)}",
+                            f"2. Read back {primary.method} {read_step.url} and observe persisted undocumented properties: {', '.join(persisted_undocumented)}"
+                        ]
+                    )
+                    findings.append(f)
+                    await self._confirm(on_event, f, f"BOPLA Mass Assignment on {producer.method} {producer.path}")
+                elif echoed_undocumented:
+                    f = Finding(
+                        id=f"fnd_bopla_ma_{uuid.uuid4().hex[:6]}",
+                        category="BOPLA",
+                        severity="LOW",
+                        endpoint=producer.path,
+                        method=producer.method,
+                        resource_type=res_node.label or name.capitalize(),
+                        status=FindingStatus.POTENTIAL,
+                        confidence=0.40,
+                        identities={"owner": user_a.identity_id, "probe": user_b.identity_id},
+                        hypothesis=Hypothesis(
+                            id=f"hyp_bopla_{producer.operation_id}",
+                            rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type=res_node.label or name.capitalize(), owner_field=owner_field),
+                            operation_id=producer.operation_id,
+                            confidence=0.40,
+                            provenance=Provenance.DOCUMENTED
+                        ),
+                        graph_path=[f"{producer.method} {producer.path} (Mass Assignment: Echoed in create response but not persisted)"],
+                        control_evidence={"status": inj_res.status_code, "echoed_fields": echoed_undocumented},
+                        probe_evidence={"status": read_res.status_code},
+                        diff_fields=echoed_undocumented,
+                        repro_curl=f"curl -X {producer.method} '{inj_step.url}' -H 'Authorization: Bearer <USER_A_TOKEN>' -H 'Content-Type: application/json' -d '{json.dumps(inj_body)}'",
+                        reproduction_steps=[
+                            f"1. As owner ({user_a.identity_id}) with bearer token <USER_A_TOKEN>, send {producer.method} {producer.path} with fields: {', '.join(echoed_undocumented)}",
+                            f"2. Fields were echoed in create response but not found on read-back."
+                        ]
+                    )
+                    findings.append(f)
+                    await self._emit(on_event, "log", f"[POTENTIAL] BOPLA on {producer.method} {producer.path}: fields echoed but not persisted", "C", f.model_dump())
+
+                # Check mutation operations (PATCH / PUT)
+                others = [o for o in operations if o.path_params and name in o.path]
+                mut_ops = [o for o in others if o.method in {"PATCH", "PUT"}]
+                for mop in mut_ops:
+                    m_key = f"Mass Assignment: {mop.method} {mop.path}"
+                    if m_key not in self.coverage.bopla_operations_found:
+                        self.coverage.bopla_operations_found.append(m_key)
+                    if not enable_mutations:
+                        reason = "--mutations not set"
+                        self.coverage.skipped.append(ResourceSkip(resource=m_key, reason=reason))
+                        continue
+                    m_step = self._step(f"bopla_mut_{mop.operation_id}", user_a, mop, "probe_mass_assignment", obj_id, body=injected_fields)
+                    m_res = await ex(m_step)
+                    if not (200 <= m_res.status_code < 300):
+                        reason = f"HTTP status {m_res.status_code} on mutation injection"
+                        self.coverage.skipped.append(ResourceSkip(resource=m_key, reason=reason))
+                        continue
+                    m_read = await ex(self._step(f"bopla_mread_{primary.operation_id}", user_a, primary, "control_owner", obj_id))
+                    if not (200 <= m_read.status_code < 300):
+                        reason = f"read-back failed (HTTP {m_read.status_code}) after mutation"
+                        self.coverage.skipped.append(ResourceSkip(resource=m_key, reason=reason))
+                        continue
+                    if m_key not in self.coverage.bopla_operations_tested:
+                        self.coverage.bopla_operations_tested.append(m_key)
+                    m_persisted = [k for k, ev in injected_fields.items() if not is_documented_writable(mop.request_schema, k) and isinstance(m_read.body, dict) and str(m_read.body.get(k)) == str(ev)]
+                    m_echoed = [k for k, ev in injected_fields.items() if not is_documented_writable(mop.request_schema, k) and k not in m_persisted and isinstance(m_res.body, dict) and str(m_res.body.get(k)) == str(ev)]
+                    if m_persisted:
+                        f = Finding(
+                            id=f"fnd_bopla_mut_{uuid.uuid4().hex[:6]}",
+                            category="BOPLA",
+                            severity="HIGH",
+                            endpoint=mop.path,
+                            method=mop.method,
+                            resource_type=res_node.label or name.capitalize(),
+                            status=FindingStatus.CONFIRMED,
+                            confidence=0.95,
+                            identities={"owner": user_a.identity_id, "probe": user_b.identity_id},
+                            hypothesis=Hypothesis(id=f"hyp_bopla_{mop.operation_id}", rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type=res_node.label or name.capitalize(), owner_field=owner_field), operation_id=mop.operation_id, confidence=0.95, provenance=Provenance.DOCUMENTED),
+                            graph_path=[f"{mop.method} {mop.path} (Mass Assignment on Mutation Persisted)"],
+                            control_evidence={"status": m_res.status_code},
+                            probe_evidence={"status": m_read.status_code, "persisted_fields": m_persisted},
+                            diff_fields=m_persisted,
+                            repro_curl=f"curl -X {mop.method} '{m_step.url}' -H 'Authorization: Bearer <USER_A_TOKEN>' -H 'Content-Type: application/json' -d '{json.dumps(injected_fields)}'",
+                            reproduction_steps=[f"1. As owner ({user_a.identity_id}) with token <USER_A_TOKEN>, send {mop.method} {mop.path} with {', '.join(m_persisted)}", f"2. Read back {primary.method} {primary.path} and observe persistence."]
+                        )
+                        findings.append(f)
+                        await self._confirm(on_event, f, f"BOPLA Mass Assignment on {mop.method} {mop.path}")
+                    elif m_echoed:
+                        f = Finding(
+                            id=f"fnd_bopla_mut_{uuid.uuid4().hex[:6]}",
+                            category="BOPLA",
+                            severity="LOW",
+                            endpoint=mop.path,
+                            method=mop.method,
+                            resource_type=res_node.label or name.capitalize(),
+                            status=FindingStatus.POTENTIAL,
+                            confidence=0.40,
+                            identities={"owner": user_a.identity_id, "probe": user_b.identity_id},
+                            hypothesis=Hypothesis(id=f"hyp_bopla_{mop.operation_id}", rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type=res_node.label or name.capitalize(), owner_field=owner_field), operation_id=mop.operation_id, confidence=0.40, provenance=Provenance.DOCUMENTED),
+                            graph_path=[f"{mop.method} {mop.path} (Mass Assignment: Echoed in mutation response but not persisted)"],
+                            control_evidence={"status": m_res.status_code},
+                            probe_evidence={"status": m_read.status_code},
+                            diff_fields=m_echoed,
+                            repro_curl=f"curl -X {mop.method} '{m_step.url}' -H 'Authorization: Bearer <USER_A_TOKEN>' -H 'Content-Type: application/json' -d '{json.dumps(injected_fields)}'",
+                            reproduction_steps=[f"1. Send {mop.method} {mop.path} with {', '.join(m_echoed)}", f"2. Fields echoed but not persisted."]
+                        )
+                        findings.append(f)
+                        await self._emit(on_event, "log", f"[POTENTIAL] BOPLA on {mop.method} {mop.path}: fields echoed but not persisted", "C", f.model_dump())
+
+            # Part B - Excessive data exposure (passive, zero extra requests)
+            op_map = {op.operation_id: op for op in operations}
+            seen_exposure_keys = set()
+            sensitive_patterns = ["password", "hash", "secret", "token", "ssn", "api_key", "private_key", "internal"]
+
+            def _extract_kv(data: Any) -> List[Tuple[str, Any]]:
+                items = []
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        items.append((k, v))
+                        if isinstance(v, (dict, list)):
+                            items.extend(_extract_kv(v))
+                elif isinstance(data, list):
+                    for elem in data:
+                        if isinstance(elem, (dict, list)):
+                            items.extend(_extract_kv(elem))
+                return items
+
+            for (step, res) in recorded_responses:
+                op = op_map.get(step.operation_id)
+                if not op or not (200 <= res.status_code < 300) or not isinstance(res.body, (dict, list)):
+                    continue
+
+                res_code_str = str(res.status_code)
+                schema = (
+                    op.response_schemas.get(res_code_str)
+                    or op.response_schemas.get("default")
+                    or next((s for c, s in op.response_schemas.items() if c.startswith("2")), None)
+                )
+
+                check_key = f"Excessive Data Exposure: {op.method} {op.path}"
+                if not schema:
+                    if check_key not in [s.resource for s in self.coverage.skipped]:
+                        self.coverage.skipped.append(ResourceSkip(resource=check_key, reason=f"no documented response schema for HTTP {res.status_code}"))
+                    continue
+
+                if check_key not in self.coverage.bopla_operations_found:
+                    self.coverage.bopla_operations_found.append(check_key)
+                if check_key not in self.coverage.bopla_operations_tested:
+                    self.coverage.bopla_operations_tested.append(check_key)
+
+                doc_props = get_schema_properties(schema)
+                for (k, v) in _extract_kv(res.body):
+                    if k in doc_props:
+                        continue
+                    k_lower = k.lower()
+                    if any(pat in k_lower for pat in sensitive_patterns):
+                        finding_key = (op.operation_id, k)
+                        if finding_key in seen_exposure_keys:
+                            continue
+                        seen_exposure_keys.add(finding_key)
+                        masked = "***"
+                        f = Finding(
+                            id=f"fnd_bopla_exp_{uuid.uuid4().hex[:6]}",
+                            category="BOPLA",
+                            severity="MEDIUM",
+                            endpoint=op.path,
+                            method=op.method,
+                            resource_type="ObjectProperty",
+                            status=FindingStatus.CONFIRMED,
+                            confidence=0.90,
+                            identities={"owner": user_a.identity_id, "probe": step.identity_id},
+                            hypothesis=Hypothesis(
+                                id=f"hyp_bopla_{op.operation_id}_{k}",
+                                rule=Rule(rule_type=RuleType.OWNER_ONLY, resource_type="ObjectProperty", owner_field=k),
+                                operation_id=op.operation_id,
+                                confidence=0.90,
+                                provenance=Provenance.DOCUMENTED
+                            ),
+                            graph_path=[f"{op.method} {op.path} (Excessive Data Exposure: Undocumented Sensitive Key '{k}')"],
+                            control_evidence={"status": res.status_code},
+                            probe_evidence={"undocumented_key": k, "preview": masked, "status": res.status_code},
+                            diff_fields=[f"{k}={masked}"],
+                            repro_curl=f"curl -X {op.method} '{step.url}' -H 'Authorization: Bearer <TOKEN>'",
+                            reproduction_steps=[
+                                f"1. Call {op.method} {op.path} with valid credentials.",
+                                f"2. Inspect JSON response and observe undocumented sensitive key '{k}' (preview: {masked})."
+                            ]
+                        )
+                        findings.append(f)
+                        await self._confirm(on_event, f, f"BOPLA Excessive Data Exposure on {op.method} {op.path}: {k}")
+
+        unique: Dict[tuple, Finding] = {}  # one finding per category/method/endpoint/diff_fields
         for f in findings:
-            unique.setdefault((getattr(f, "category", "BOLA"), f.method, f.endpoint), f)
+            unique.setdefault((getattr(f, "category", "BOLA"), f.method, f.endpoint, tuple(f.diff_fields)), f)
         return list(unique.values())
 
     async def _minimize_and_store(self, finding: Finding, setup: PlanStep, probe: PlanStep, client, id_path: str = "id"):
@@ -528,7 +812,7 @@ class GraphGuidedScanner:
 
 async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.yaml", enable_mutations: bool = False,
                       budget: int = 30, on_event: Optional[Callable] = None, client: Optional[httpx.AsyncClient] = None,
-                      operations: Optional[List[Operation]] = None) -> List[Finding]:
+                      operations: Optional[List[Operation]] = None, enable_bopla: bool = True) -> List[Finding]:
     """Scan an API described by a TargetProfile."""
     from apiguard.engine.auth import AuthRegistry
 
@@ -557,4 +841,4 @@ async def scan_target(target_profile: Union[str, TargetProfile] = "targets/demo.
 
     scanner = GraphGuidedScanner(executor=executor, base_url=profile.base_url, target_profile=profile)
     return await scanner.run_scan(operations=profile.load_operations() if operations is None else operations, user_a=user_a, user_b=user_b,
-                                  admin_user=admin_user, enable_mutations=enable_mutations, on_event=on_event, client=client)
+                                  admin_user=admin_user, enable_mutations=enable_mutations, enable_bopla=enable_bopla, on_event=on_event, client=client)

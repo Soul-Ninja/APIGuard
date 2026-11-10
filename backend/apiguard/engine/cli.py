@@ -125,6 +125,24 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 print(f"  - [control_admin] {op.method} {url} (Identity: {admin_user.identity_id})")
                 print(f"  - [probe_adversary] {op.method} {url} (Identity: {user_b.identity_id})")
 
+        producer_ops = [op for op in operations if op.method == "POST" and not op.path_params and op.path.lower() not in {"/auth/login", "/auth/refresh"}]
+        mutation_ops = [op for op in operations if op.method in {"PATCH", "PUT"} and op.path_params]
+        if producer_ops or mutation_ops:
+            print("\n" + "=" * 65)
+            print("  BOPLA PROPERTY INJECTION CHECKS (Mass Assignment)")
+            print("=" * 65)
+            for op in producer_ops:
+                url = f"{target_url}{op.path}"
+                print(f"\nPlanned BOPLA Mass Assignment for {op.method} {op.path}:")
+                print(f"  - [probe_mass_assignment] {op.method} {url} (Identity: {user_a.identity_id}) [Fields: role, is_admin, owner_id]")
+            for op in mutation_ops:
+                url = f"{target_url}{op.path}"
+                if enable_mutations:
+                    print(f"\nPlanned BOPLA Mass Assignment for {op.method} {op.path}:")
+                    print(f"  - [probe_mass_assignment] {op.method} {url} (Identity: {user_a.identity_id}) [Fields: role, is_admin, owner_id]")
+                else:
+                    print(f"\nPlanned BOPLA Mass Assignment for {op.method} {op.path}: [MUTATION GATE: skipped without --mutations]")
+
         print("\n[SUCCESS] Dry-run completed. All prerequisite paths validated.")
         return 0
 
@@ -219,6 +237,7 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         coverage is not None
         and len(coverage.resources_tested) == 0
         and len(coverage.admin_operations_tested) == 0
+        and len(getattr(coverage, "bopla_operations_tested", [])) == 0
     )
 
     confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
@@ -228,8 +247,9 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         print(f"  AUDIT COMPLETE: {len(confirmed_findings)} CONFIRMED VULNERABILITIES ({duration_ms}ms)")
         print("=" * 65)
 
-        bola_findings = [f for f in findings if getattr(f, "category", "BOLA") != "BFLA"]
+        bola_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BOLA"]
         bfla_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BFLA"]
+        bopla_findings = [f for f in findings if getattr(f, "category", "BOLA") == "BOPLA"]
 
         for f in bola_findings:
             if f.status == FindingStatus.POTENTIAL:
@@ -263,6 +283,23 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
                 print(f"    Confidence:    {f.confidence}")
                 print(f"    Repro Curl:    {f.repro_curl}")
 
+        for f in bopla_findings:
+            if f.status == FindingStatus.POTENTIAL:
+                print(f"\n[?] NEEDS REVIEW: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                print(f"    Status:        POTENTIAL (injected fields echoed but not persisted in read-back)")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    Leaked Fields: {f.diff_fields}")
+                print(f"    Repro Curl:    {f.repro_curl}")
+            else:
+                print(f"\n[!] BOPLA FINDING: {f.id} — {f.severity}")
+                print(f"    Endpoint:      {f.method} {f.endpoint}")
+                desc = "Property-Level Violation"
+                print(f"    Status:        {f.status.value.upper()} ({desc})")
+                print(f"    Confidence:    {f.confidence}")
+                print(f"    Leaked Fields: {f.diff_fields}")
+                print(f"    Repro Curl:    {f.repro_curl}")
+
     if client:
         await client.aclose()
 
@@ -272,6 +309,8 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         print(f"[*] Coverage: Tested {len(coverage.resources_tested)} of {len(coverage.resources_found)} resources.")
         if coverage.admin_operations_found:
             print(f"[*] BFLA Coverage: Tested {len(coverage.admin_operations_tested)} of {len(coverage.admin_operations_found)} admin operations.")
+        if coverage.bopla_operations_found:
+            print(f"[*] BOPLA Coverage: Tested {len(coverage.bopla_operations_tested)} of {len(coverage.bopla_operations_found)} BOPLA checks.")
 
     confirmed_findings = [f for f in findings if f.status == FindingStatus.CONFIRMED]
     if len(confirmed_findings) > 0:

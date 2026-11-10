@@ -11,6 +11,7 @@ class LoginInput(BaseModel):
     password: str
 
 class ProjectCreateInput(BaseModel):
+    model_config = {"extra": "allow"}
     name: str
     confidential_data: Optional[str] = "Confidential Data"
     budget: Optional[str] = "$50,000"
@@ -43,10 +44,12 @@ def login(creds: LoginInput):
 @target_app.post("/projects", status_code=status.HTTP_201_CREATED)
 def create_project(data: ProjectCreateInput, authorization: Optional[str] = Header(None)):
     user = get_current_user(authorization)
+    cfg = get_target_config()
     project_id = f"proj_{len(PROJECTS_STORE) + 42}"
     record = {
         "id": project_id,
         "owner_id": user["id"],
+        "created_by": user["id"],
         "owner_email": user["username"],
         "name": data.name,
         "confidential_data": data.confidential_data,
@@ -54,6 +57,15 @@ def create_project(data: ProjectCreateInput, authorization: Optional[str] = Head
         "billing_card": "**** **** **** 4242",
         "created_at": "2026-10-21T22:00:00Z"
     }
+    if cfg.defect_mass_assign and not cfg.patched_mode:
+        extra = getattr(data, "__pydantic_extra__", None) or getattr(data, "model_extra", None) or {}
+        if "owner_id" in extra:
+            record["owner_id"] = extra["owner_id"]
+        if "role" in extra:
+            record["role"] = extra["role"]
+        if "is_admin" in extra:
+            record["is_admin"] = extra["is_admin"]
+
     PROJECTS_STORE[project_id] = record
     return record
 
@@ -66,18 +78,22 @@ def get_project(project_id: str, authorization: Optional[str] = Header(None)):
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
+    res = dict(project)
+    if cfg.defect_exposure and not cfg.patched_mode:
+        res["password_hash"] = "pbkdf2_sha256$260000$secret_hash_value_xyz"
+
     # Legitimate role exemptions (Admin & Support may read any project)
     if user["role"] in {"admin", "support"}:
-        return project
+        return res
 
     # Check ownership unless Defect A is enabled AND not in patched mode
     is_vulnerable = cfg.defect_a and not cfg.patched_mode
     if not is_vulnerable:
         # SECURE: enforce ownership
-        if project["owner_id"] != user["id"]:
+        if project["owner_id"] != user["id"] and project.get("created_by") != user["id"]:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: You do not own this project")
 
-    return project
+    return res
 
 @target_app.get("/projects/{project_id}/export")
 def export_project(project_id: str, authorization: Optional[str] = Header(None)):

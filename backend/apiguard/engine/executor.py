@@ -51,7 +51,8 @@ class SafeExecutor:
             raise SecurityViolationError(f"Host '{hostname}' is not in the allowlist {self.allowed_hosts}")
 
         # 2. Method safety
-        if step.method in {"POST", "PUT", "PATCH", "DELETE"} and not self.enable_mutations and step.purpose != "setup":
+        allowed_post = step.method == "POST" and step.purpose in {"setup", "probe_mass_assignment"}
+        if step.method in {"POST", "PUT", "PATCH", "DELETE"} and not self.enable_mutations and not allowed_post:
             raise SecurityViolationError(f"Mutating method {step.method} refused because mutations are disabled")
 
         # 3. Budget checks

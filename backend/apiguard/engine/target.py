@@ -149,6 +149,7 @@ class TargetProfile(BaseModel):
     resources: Dict[str, ResourceOverride] = Field(default_factory=dict)
     admin_operations: List[str] = Field(default_factory=list)
     admin: Optional[str] = "admin"
+    mass_assignment_fields: Optional[Union[Dict[str, Any], List[Any]]] = Field(default_factory=dict)
     allowed_hosts: List[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost"])
     request_budget: int = 30
     owner: str = "user_a"
@@ -256,3 +257,32 @@ def is_admin_operation(op: Any, profile: Optional[TargetProfile] = None) -> bool
         return True
 
     return False
+
+
+def is_documented_writable(schema: Optional[Dict[str, Any]], field: str) -> bool:
+    """Checks whether a property is documented as a writable field in an OpenAPI schema."""
+    if not schema or not isinstance(schema, dict):
+        return False
+    props = schema.get("properties")
+    if isinstance(props, dict) and field in props:
+        field_def = props[field]
+        if isinstance(field_def, dict) and field_def.get("readOnly") is True:
+            return False
+        return True
+    return False
+
+
+def get_schema_properties(schema: Optional[Dict[str, Any]]) -> set[str]:
+    """Recursively collects documented property names from an OpenAPI schema."""
+    if not schema or not isinstance(schema, dict):
+        return set()
+    props = set(schema.get("properties", {}).keys()) if isinstance(schema.get("properties"), dict) else set()
+    items = schema.get("items")
+    if isinstance(items, dict):
+        props.update(get_schema_properties(items))
+    for comb in ("allOf", "anyOf", "oneOf"):
+        subs = schema.get(comb)
+        if isinstance(subs, list):
+            for sub in subs:
+                props.update(get_schema_properties(sub))
+    return props

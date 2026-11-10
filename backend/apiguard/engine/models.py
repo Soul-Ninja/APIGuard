@@ -95,6 +95,7 @@ class Operation(BaseModel):
     tags: List[str] = []
     summary: Optional[str] = None
     request_schema: Optional[Dict[str, Any]] = None
+    response_schemas: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 class GraphNode(BaseModel):
     id: str
@@ -177,4 +178,6 @@ class ScanCoverage(BaseModel):
     skipped: List[ResourceSkip] = Field(default_factory=list)
     admin_operations_found: List[str] = Field(default_factory=list)
     admin_operations_tested: List[str] = Field(default_factory=list)
+    bopla_operations_found: List[str] = Field(default_factory=list)
+    bopla_operations_tested: List[str] = Field(default_factory=list)
 

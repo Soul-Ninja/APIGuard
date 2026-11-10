@@ -294,6 +294,11 @@ class OpenAPIParser:
                     continue
                 op_id = op.get("operationId") or f"{method.lower()}_{re.sub(r'[^a-zA-Z0-9]', '_', path)}"
                 resolved_op = self.resolved_spec["paths"][path].get(method, {})
+                resolved_responses = {}
+                for code, resp in resolved_op.get("responses", {}).items():
+                    s = self._json_schema(resp)
+                    if s:
+                        resolved_responses[str(code)] = s
                 operations.append(Operation(
                     id=op_id,
                     method=method.upper(),
@@ -308,5 +313,6 @@ class OpenAPIParser:
                     tags=op.get("tags", []),
                     summary=op.get("summary"),
                     request_schema=self._json_schema(resolved_op.get("requestBody", {})) or None,
+                    response_schemas=resolved_responses,
                 ))
         return operations

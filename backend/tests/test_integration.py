@@ -155,7 +155,9 @@ async def test_zero_false_positives_when_secure_and_patched(real_uvicorn_server)
     # Case 2: Patched mode
     reset_db()
     update_target_config(defect_a=True, defect_b=True, defect_c=True, patched_mode=True)
-    findings_patched = await graph_scanner.run_scan(operations, user_a, user_b, enable_mutations=True)
+    executor_patched = SafeExecutor(allowed_hosts={"127.0.0.1", "localhost"}, total_budget=30, enable_mutations=True)
+    graph_scanner_patched = GraphGuidedScanner(executor_patched, real_uvicorn_server)
+    findings_patched = await graph_scanner_patched.run_scan(operations, user_a, user_b, enable_mutations=True)
     assert len(findings_patched) == 0
 
 @pytest.mark.asyncio

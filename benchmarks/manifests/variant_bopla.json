@@ -1,0 +1,16 @@
+{
+  "variant": "variant_bopla",
+  "description": "BOPLA defects: mass assignment on POST /projects and excessive data exposure on GET /projects/{project_id}",
+  "vulnerable_endpoints": [
+    {
+      "method": "POST",
+      "endpoint": "/projects",
+      "type": "bopla_mass_assignment"
+    },
+    {
+      "method": "GET",
+      "endpoint": "/projects/{project_id}",
+      "type": "bopla_excessive_data_exposure"
+    }
+  ]
+}
