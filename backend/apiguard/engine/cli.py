@@ -11,29 +11,59 @@ from apiguard.engine.scanner import GraphGuidedScanner
 from apiguard.engine.auth import AuthRegistry
 from apiguard.engine.target import load_target_profile, TargetProfile, is_admin_operation
 from apiguard.engine.models import FindingStatus, IdentityProfile
+from apiguard.engine.reports import get_version, write_reports
 from apiguard.target.data import reset_db
 from apiguard.target.config import update_target_config
 
 def main():
     parser = argparse.ArgumentParser(description="APIGuard CLI - Graph-Guided API Authorization Tester")
+    parser.add_argument("--version", action="version", version=f"APIGuard {get_version()}")
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     scan_parser = subparsers.add_parser("scan", help="Run authorization scan")
+    scan_parser.add_argument("--version", action="version", version=f"APIGuard {get_version()}")
     scan_parser.add_argument("--dry-run", action="store_true", help="Print execution plan without sending HTTP requests")
     scan_parser.add_argument("--target", default=None, help="Target base URL")
     scan_parser.add_argument("--mutations", action="store_true", help="Enable mutating tests (PATCH, DELETE)")
     scan_parser.add_argument("--profile", default="targets/demo.yaml", help="Path to TargetProfile YAML file")
+    scan_parser.add_argument("--json", dest="json_path", default=None, help="Output path for JSON report")
+    scan_parser.add_argument("--sarif", dest="sarif_path", default=None, help="Output path for SARIF report")
+    scan_parser.add_argument("--markdown", dest="markdown_path", default=None, help="Output path for Markdown report")
+    scan_parser.add_argument(
+        "--fail-on",
+        choices=["critical", "high", "medium", "low", "info", "none", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "NONE"],
+        default=None,
+        help="Fail build if any confirmed finding meets or exceeds severity (critical, high, medium, low, info, none)"
+    )
 
     args = parser.parse_args()
 
     if args.command == "scan":
-        code = asyncio.run(run_cli_scan(dry_run=args.dry_run, target_url=args.target, profile_path=args.profile, enable_mutations=args.mutations))
+        code = asyncio.run(run_cli_scan(
+            dry_run=args.dry_run,
+            target_url=args.target,
+            profile_path=args.profile,
+            enable_mutations=args.mutations,
+            json_path=args.json_path,
+            sarif_path=args.sarif_path,
+            markdown_path=args.markdown_path,
+            fail_on=args.fail_on
+        ))
         sys.exit(code)
     else:
         parser.print_help()
         sys.exit(0)
 
-async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str = 'targets/demo.yaml', enable_mutations: bool = False) -> int:
+async def run_cli_scan(
+    dry_run: bool,
+    target_url: str = None,
+    profile_path: str = 'targets/demo.yaml',
+    enable_mutations: bool = False,
+    json_path: str = None,
+    sarif_path: str = None,
+    markdown_path: str = None,
+    fail_on: str = None
+) -> int:
     print("=" * 65)
     print("  APIGuard CLI Engine — Graph-Guided BOLA Scanner")
     print("=" * 65)
@@ -388,13 +418,6 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
         if getattr(coverage, "auth_operations_found", None):
             print(f"[*] AUTH Coverage: Tested {len(coverage.auth_operations_tested)} of {len(coverage.auth_operations_found)} auth checks.")
 
-    active_confirmed = [
-        f for f in findings
-        if f.status == FindingStatus.CONFIRMED and getattr(f, "category", "BOLA") in ("BOLA", "BFLA", "BOPLA", "AUTH")
-    ]
-    if len(active_confirmed) > 0:
-        return 1
-
     if zero_tested:
         sys.stdout.flush()
         print("[ERROR] Nothing was tested - check base_url, credentials and spec", file=sys.stderr)
@@ -406,7 +429,41 @@ async def run_cli_scan(dry_run: bool, target_url: str = None, profile_path: str 
     if skipped_resources:
         print(f"[WARNING] Partial coverage: {len(skipped_resources)} of {len(coverage.resources_found)} resources were skipped.")
 
-    return 0
+    # Determine exit code according to --fail-on policy
+    exit_code = 0
+    if not fail_on:
+        active_confirmed = [
+            f for f in findings
+            if f.status == FindingStatus.CONFIRMED and getattr(f, "category", "BOLA") in ("BOLA", "BFLA", "BOPLA", "AUTH")
+        ]
+        if len(active_confirmed) > 0:
+            exit_code = 1
+    else:
+        norm_fail_on = fail_on.strip().upper()
+        if norm_fail_on == "NONE":
+            exit_code = 0
+        else:
+            sev_levels = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
+            thresh = sev_levels.get(norm_fail_on, 4)
+            failing = [
+                f for f in findings
+                if f.status == FindingStatus.CONFIRMED and sev_levels.get((f.severity or "INFO").upper(), 0) >= thresh
+            ]
+            if len(failing) > 0:
+                exit_code = 1
+
+    # Write reports if requested (written on exit 0 and exit 1; never on exit 2)
+    if json_path or sarif_path or markdown_path:
+        write_reports(
+            findings=findings,
+            profile=profile,
+            coverage=coverage,
+            json_path=json_path,
+            sarif_path=sarif_path,
+            markdown_path=markdown_path
+        )
+
+    return exit_code
 
 if __name__ == "__main__":
     main()

@@ -249,10 +249,106 @@ apiguard scan --dry-run   # print the plan, send nothing
 apiguard scan             # run the scan (add --mutations for PATCH/DELETE)
 apiguard scan --profile backend/apiguard/targets/example.yaml  # scan any target API
 
+# CI report flags and severity threshold:
+apiguard scan --profile targets/api.yaml --json report.json --sarif report.sarif --markdown report.md --fail-on high
+
+# Show version:
+apiguard --version
+
 # Windows alternative (if Smart App Control blocks apiguard.exe):
 python -m apiguard scan --dry-run
 python -m apiguard scan --profile backend/apiguard/targets/example.yaml
 ```
+
+---
+
+## 🤖 GitHub Action & CI/CD Integration
+
+APIGuard can be integrated directly into your GitHub Actions workflow as a composite action to run graph-guided security audits on every pull request and push.
+
+> **Note:** The `@v1` action reference (`uses: Soul-Ninja/APIGuard@v1`) works once a `v1` release tag exists on GitHub. For local development or repository testing, use `uses: ./`.
+
+### Example Workflow: `.github/workflows/security-scan.yml`
+
+```yaml
+name: API Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write      # Required to upload SARIF to GitHub Code Scanning
+  pull-requests: write        # Required to post / update the PR comment summary
+
+jobs:
+  apiguard-scan:
+    name: Run APIGuard Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Start Application API Server
+        run: |
+          # Start your backend API server in the background
+          python -m uvicorn myapi.main:app --host 127.0.0.1 --port 8000 &
+          sleep 3
+
+      - name: Run APIGuard Scanner
+        uses: Soul-Ninja/APIGuard@v1
+        with:
+          profile: "profiles/production_api.yaml"
+          fail-on: "high"
+          upload-sarif: "true"
+          comment: "true"
+          sarif-file: "apiguard.sarif"
+          python-version: "3.12"
+        env:
+          # Pass profile credentials securely via environment variables (${API_KEY_USER_A})
+          API_KEY_USER_A: ${{ secrets.SCANNER_USER_A_KEY }}
+          API_KEY_USER_B: ${{ secrets.SCANNER_USER_B_KEY }}
+          ADMIN_TOKEN: ${{ secrets.SCANNER_ADMIN_TOKEN }}
+```
+
+---
+
+## 📑 Report Formats & CI Options
+
+APIGuard produces three machine-readable and developer-friendly audit report formats during `scan`:
+
+1. **JSON Report (`--json PATH`):**
+   Full audit dump containing tool version, target `base_url`, aggregate finding summaries (by category, status, and severity), complete OpenAPI coverage statistics (including skipped operations and reasons), and serialized findings.
+2. **SARIF 2.1.0 Report (`--sarif PATH`):**
+   Official Static Analysis Results Format (OASIS SARIF 2.1.0) compatible with **GitHub Code Scanning**, GitLab, and Azure DevOps. Features:
+   - Dedicated rule definitions mapped to OWASP API Top 10 (2023) tags (`API1:2023` BOLA, `API2:2023` Broken Auth, `API3:2023` BOPLA, `API5:2023` BFLA, `API8:2023` Misconfig, `API9:2023` Inventory).
+   - Strict `security-severity` scores (`9.5` Critical, `7.5` High, `5.0` Medium, `3.0` Low, `1.0` Info).
+   - Precise OpenAPI specification file and line locations (`startLine` pinpointing the exact endpoint path in your YAML/JSON spec).
+   - Stable partial fingerprints (`apiguardFindingKey/v1 = sha256(category|method|endpoint|rule_id)`) ensuring alerts track persistently across commits without spurious ID churn.
+3. **Pull Request Markdown Summary (`--markdown PATH`):**
+   Structured report starting with the `<!-- apiguard-report -->` anchor for idempotently updating existing PR comments. Contains an executive status verdict, finding counts by category and severity matrix, grouped findings (`Confirmed`, `Needs Review`, `Passive`), reproduction cURL commands, and coverage metrics. Hard-capped at 60,000 characters to comply with GitHub comment limits.
+
+### Build Failure Thresholds (`--fail-on`)
+
+The `--fail-on` flag controls CI exit codes based on finding severities:
+
+| `--fail-on` Value | Description | Exit Code 1 Trigger Condition |
+|:--- |:--- |:---|
+| *(absent)* | Default APIGuard policy | Any `CONFIRMED` active vulnerability (`BOLA`, `BFLA`, `BOPLA`, or `AUTH`). Passive hygiene findings alone exit `0`. |
+| `critical` | Critical-only gate | Any `CONFIRMED` finding of any category with severity `CRITICAL`. |
+| `high` | Standard CI gate | Any `CONFIRMED` finding of any category with severity `CRITICAL` or `HIGH`. |
+| `medium` | Strict posture | Any `CONFIRMED` finding with severity $\ge$ `MEDIUM` (e.g., active leaks, CORS with credentials, verbose errors). |
+| `low` | Full hygiene gate | Any `CONFIRMED` finding with severity $\ge$ `LOW` (including missing headers, version disclosures, and cache policies). |
+| `info` | Total enforcement | Any `CONFIRMED` finding including `INFO` (undocumented status codes). |
+| `none` | Audit mode | Never exits with code `1` (always `0` upon successful scan completion). |
+
+> **Notes on Exit Codes:**
+> - `POTENTIAL` findings (`Needs review`) never trigger build failure (`exit 1`) regardless of `--fail-on`.
+> - Configuration or target connection errors exit with code `2`. When exit code `2` occurs, no partial report files are written.
+
 
 
 ---

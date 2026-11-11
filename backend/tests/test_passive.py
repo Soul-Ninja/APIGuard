@@ -286,6 +286,24 @@ async def test_cache_control_positive_and_negative():
         assert len(cc) == 0
 
 
+    # Negative 2: Response holds only id, owner_id, text without Cache-Control -> no finding
+    app_plain = FastAPI()
+
+    @app_plain.post("/items")
+    def create_item_plain():
+        return {"id": "1", "owner_id": "user_a", "text": "plain text"}
+
+    @app_plain.get("/items/{id}")
+    def get_item_plain(id: str):
+        return {"id": id, "owner_id": "user_a", "text": "plain text without sensitive keys"}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app_plain), base_url="http://127.0.0.1:8000") as client:
+        scanner = GraphGuidedScanner(SafeExecutor(allowed_hosts={"127.0.0.1"}), "http://127.0.0.1:8000", target_profile=profile)
+        findings = await scanner.run_scan(ops, user_a, user_b, client=client, enable_passive=True)
+        cc = [f for f in findings if f.category == "MISCONFIG" and f.endpoint == "Cache-Control"]
+        assert len(cc) == 0
+
+
 @pytest.mark.asyncio
 async def test_deprecated_endpoint_positive_and_negative():
     app = FastAPI()

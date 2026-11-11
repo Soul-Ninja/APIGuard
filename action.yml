@@ -1,0 +1,140 @@
+name: "APIGuard CI Security Scanner"
+description: "Run APIGuard graph-guided API security tests in CI: generate SARIF reports, upload to GitHub Code Scanning, and post pull request summaries. Required permissions: contents: read, security-events: write, pull-requests: write."
+author: "Soul-Ninja"
+
+inputs:
+  profile:
+    description: "Path to TargetProfile YAML file"
+    required: true
+  fail-on:
+    description: "Fail build if any confirmed finding meets or exceeds severity (critical, high, medium, low, info, none)"
+    required: false
+    default: ""
+  mutations:
+    description: "Enable mutating tests (PATCH, DELETE)"
+    required: false
+    default: "false"
+  sarif-file:
+    description: "Path to output SARIF report"
+    required: false
+    default: "apiguard.sarif"
+  upload-sarif:
+    description: "Upload SARIF file to GitHub Code Scanning"
+    required: false
+    default: "true"
+  comment:
+    description: "Post/update pull request comment summary"
+    required: false
+    default: "true"
+  python-version:
+    description: "Python version to use"
+    required: false
+    default: "3.12"
+
+outputs:
+  exit-code:
+    description: "Exit code of the scan"
+    value: ${{ steps.scan.outputs.exit-code }}
+  sarif-file:
+    description: "Path to the generated SARIF file"
+    value: ${{ steps.scan.outputs.sarif-file }}
+  confirmed-count:
+    description: "Number of confirmed findings"
+    value: ${{ steps.scan.outputs.confirmed-count }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install APIGuard
+      shell: bash
+      run: |
+        pip install "${{ github.action_path }}"
+
+    - name: Run APIGuard Scan
+      id: scan
+      shell: bash
+      env:
+        INPUT_PROFILE: ${{ inputs.profile }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_MUTATIONS: ${{ inputs.mutations }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: |
+        SARIF_OUT="$RUNNER_TEMP/apiguard.sarif"
+        JSON_OUT="$RUNNER_TEMP/apiguard.json"
+        MD_OUT="$RUNNER_TEMP/apiguard.md"
+
+        CMD=(python -m apiguard scan --profile "$INPUT_PROFILE" --sarif "$SARIF_OUT" --json "$JSON_OUT" --markdown "$MD_OUT")
+        if [ -n "$INPUT_FAIL_ON" ]; then
+          CMD+=(--fail-on "$INPUT_FAIL_ON")
+        fi
+        if [ "$INPUT_MUTATIONS" = "true" ]; then
+          CMD+=(--mutations)
+        fi
+
+        set +e
+        "${CMD[@]}"
+        SCAN_EXIT=$?
+        set -e
+
+        if [ -f "$SARIF_OUT" ]; then
+          mkdir -p "$(dirname "$INPUT_SARIF_FILE")"
+          cp "$SARIF_OUT" "$INPUT_SARIF_FILE"
+        fi
+
+        CONFIRMED=0
+        if [ -f "$JSON_OUT" ]; then
+          CONFIRMED=$(python -c "import json; data=json.load(open('$JSON_OUT')); print(data.get('summary', {}).get('confirmed', 0))" 2>/dev/null || echo 0)
+        fi
+
+        echo "exit-code=$SCAN_EXIT" >> "$GITHUB_OUTPUT"
+        echo "sarif-file=$INPUT_SARIF_FILE" >> "$GITHUB_OUTPUT"
+        echo "confirmed-count=$CONFIRMED" >> "$GITHUB_OUTPUT"
+        echo "SCAN_EXIT_CODE=$SCAN_EXIT" >> "$GITHUB_ENV"
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: ${{ inputs.upload-sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@b56ba49b26e50535fa1e7f7db0f4f7b4bf65d80d # v3.28.10
+      continue-on-error: true
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+
+    - name: Post or update PR comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RUNNER_TEMP: ${{ runner.temp }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        MD_OUT="$RUNNER_TEMP/apiguard.md"
+        if [ -f "$MD_OUT" ] && [ -n "$PR_NUMBER" ]; then
+          COMMENT_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --jq '.[] | select(.body | contains("<!-- apiguard-report -->")) | .id' 2>/dev/null | head -n 1)
+          if [ -n "$COMMENT_ID" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -F body=@"$MD_OUT"
+          else
+            gh pr comment "$PR_NUMBER" --body-file "$MD_OUT"
+          fi
+        fi
+
+    - name: Append to Job Summary
+      if: always()
+      shell: bash
+      env:
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: |
+        MD_OUT="$RUNNER_TEMP/apiguard.md"
+        if [ -f "$MD_OUT" ]; then
+          cat "$MD_OUT" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Check Scan Result
+      shell: bash
+      run: |
+        exit "${SCAN_EXIT_CODE:-0}"

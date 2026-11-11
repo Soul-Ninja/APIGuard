@@ -1221,8 +1221,17 @@ class GraphGuidedScanner:
                 )
                 if not is_auth_step or not (200 <= res.status_code < 300) or not isinstance(res.body, (dict, list)):
                     continue
-                sensitive_vals = DifferentialVerifier._extract_sensitive_values(res.body)
-                if not sensitive_vals:
+                op = op_map.get(step.operation_id)
+                extra_sensitive: List[str] = []
+                if self.target_profile:
+                    res_name = getattr(op, "resource_type", None) or (op.path.strip("/").split("/")[0] if op and op.path else None)
+                    if res_name:
+                        res_override = self.target_profile.get_resource_override(res_name)
+                        if res_override:
+                            extra_sensitive.extend(res_override.sensitive_fields)
+                    for r_ov in self.target_profile.resources.values():
+                        extra_sensitive.extend(r_ov.sensitive_fields)
+                if not DifferentialVerifier.contains_sensitive_data(res.body, extra_sensitive):
                     continue
                 h = {k.lower(): str(v).strip() for k, v in res.sanitized_headers.items()}
                 cc = h.get("cache-control", "").lower()

@@ -10,6 +10,12 @@ SENSITIVE_KEY_SUBSTRINGS = {
     "secret", "token", "budget", "ssn", "passport", "private"
 }
 
+# Sensitive payload data keys (excluding owner identity fields and resource IDs)
+SENSITIVE_DATA_KEY_SUBSTRINGS = {
+    "email", "billing", "card", "confidential", "secret", "token", 
+    "budget", "ssn", "passport", "private", "password", "hash", "api_key"
+}
+
 class DifferentialVerifier:
     """
     Evaluates response pairs between Owner (Control) and Adversary (Probe).
@@ -35,6 +41,27 @@ class DifferentialVerifier:
             for idx, item in enumerate(data):
                 results.update(DifferentialVerifier._extract_sensitive_values(item, f"{path}[{idx}]", extra_sensitive_fields))
         return results
+
+    @staticmethod
+    def contains_sensitive_data(data: Any, extra_sensitive_fields: Optional[List[str]] = None) -> bool:
+        """
+        Checks whether data contains keys matching sensitive data substrings or extra_sensitive_fields,
+        excluding plain IDs, owner fields, or non-sensitive text.
+        """
+        all_substrings = SENSITIVE_DATA_KEY_SUBSTRINGS | {f.lower() for f in (extra_sensitive_fields or []) if f}
+        if isinstance(data, dict):
+            for k, v in data.items():
+                k_lower = k.lower()
+                if any(sub in k_lower for sub in all_substrings):
+                    if v is not None and not isinstance(v, (dict, list)):
+                        return True
+                if DifferentialVerifier.contains_sensitive_data(v, extra_sensitive_fields):
+                    return True
+        elif isinstance(data, list):
+            for item in data:
+                if DifferentialVerifier.contains_sensitive_data(item, extra_sensitive_fields):
+                    return True
+        return False
 
     @staticmethod
     def verify(
