@@ -1,6 +1,9 @@
 name: "APIGuard CI Security Scanner"
-description: "Run APIGuard graph-guided API security tests in CI: generate SARIF reports, upload to GitHub Code Scanning, and post pull request summaries. Required permissions: contents: read, security-events: write, pull-requests: write."
+description: "Scan your API for broken authorization (OWASP API Top 10) on every pull request, with SARIF alerts and a PR comment."
 author: "Soul-Ninja"
+branding:
+  icon: "shield"
+  color: "green"
 
 inputs:
   profile:
