@@ -21,3 +21,4 @@ htmlcov/
 *.log
 build/
 *.egg-info/
+graphify-out/

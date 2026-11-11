@@ -141,7 +141,27 @@ const liveClient = {
     return res.json();
   },
 
-  async getTargetStatus(): Promise<{ patched_mode: boolean; defect_a: boolean; defect_b: boolean; defect_c: boolean }> {
+  async toggleShowcase(enabled: boolean): Promise<{ status: string; showcase: boolean; config: any }> {
+    const res = await fetch('/api/target/showcase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error(`Failed to toggle showcase mode: HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getTargetStatus(): Promise<{
+    patched_mode: boolean;
+    defect_a: boolean;
+    defect_b: boolean;
+    defect_c: boolean;
+    defect_bfla?: boolean;
+    defect_mass_assign?: boolean;
+    defect_exposure?: boolean;
+    defect_auth?: boolean;
+    defect_misconfig?: boolean;
+  }> {
     const res = await fetch('/api/target/status');
     if (!res.ok) throw new Error(`Failed to load target status: HTTP ${res.status}`);
     return res.json();

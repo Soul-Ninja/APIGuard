@@ -36,6 +36,7 @@ export interface ScanEvent {
 
 export interface Finding {
   id: string;
+  category?: 'BOLA' | 'BFLA' | 'BOPLA' | 'AUTH' | 'MISCONFIG' | 'INVENTORY' | string;
   endpoint: string;
   method: string;
   resource_type: string;

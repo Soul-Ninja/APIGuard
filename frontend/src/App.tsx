@@ -88,6 +88,7 @@ export default function App() {
   };
   const [verificationBanner, setVerificationBanner] = useState<{ before: number; after: number } | null>(null);
   const [isTargetPatched, setIsTargetPatched] = useState(false);
+  const [isShowcase, setIsShowcase] = useState(false);
 
   // Modals state
   const [activeSection, setActiveSection] = useState<SectionId>('audit');
@@ -118,10 +119,26 @@ export default function App() {
     try {
       const res = await apiClient.getTargetStatus();
       setIsTargetPatched(Boolean(res.patched_mode));
+      if (res.defect_bfla || res.defect_mass_assign || res.defect_auth) {
+        setIsShowcase(true);
+      }
     } catch {
       // ignore
     }
   }, []);
+
+  const handleToggleShowcase = async () => {
+    const next = !isShowcase;
+    setIsShowcase(next);
+    if (next) {
+      setRequestBudget((prev) => Math.max(prev, 60));
+    }
+    try {
+      await apiClient.toggleShowcase(next);
+    } catch (err) {
+      console.error('Failed to toggle showcase mode:', err);
+    }
+  };
 
   // Poll remediation status and target patch status without page reload
   useEffect(() => {
@@ -297,6 +314,14 @@ export default function App() {
           </button>
           <button className="btn-ghost" aria-pressed={enableMutations} onClick={() => setEnableMutations(!enableMutations)} title="Allow PATCH / DELETE probes">
             Mutations
+          </button>
+          <button
+            className="btn-ghost"
+            aria-pressed={isShowcase}
+            onClick={handleToggleShowcase}
+            title="When on, activates all 5 OWASP defect checks (BOLA, BFLA, BOPLA, AUTH, MISCONFIG) on demo target"
+          >
+            Showcase: all 5 checks
           </button>
 
           <div className="flex items-center gap-2 pl-3 border-l-2 border-slate-700">

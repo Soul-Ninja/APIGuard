@@ -460,7 +460,7 @@ class GraphGuidedScanner:
                                     hypothesis=self._adhoc_hyp(op, rtype, owner_field), graph_path=[producer.operation_id, "PRODUCES", op.operation_id],
                                     control_evidence={"status": 403}, probe_evidence={"status": 200},
                                     diff_fields=["unauthorized_deletion"],
-                                    repro_curl=f"curl -X DELETE '{del_probe.url}' -H 'Authorization: Bearer <TOKEN>'")
+                                    repro_curl=f"curl -X DELETE '{del_probe.url}' -H 'Authorization: Bearer <USER_B_TOKEN>'")
                         findings.append(f)
                         await self._confirm(on_event, f, f"BOLA on DELETE at {op.path}")
                         continue
@@ -856,7 +856,7 @@ class GraphGuidedScanner:
                             control_evidence={"status": res.status_code},
                             probe_evidence={"undocumented_key": k, "preview": masked, "status": res.status_code},
                             diff_fields=[f"{k}={masked}"],
-                            repro_curl=f"curl -X {op.method} '{step.url}' -H 'Authorization: Bearer <TOKEN>'",
+                            repro_curl=f"curl -X {op.method} '{step.url}' -H 'Authorization: Bearer <USER_A_TOKEN>'",
                             reproduction_steps=[
                                 f"1. Call {op.method} {op.path} with valid credentials.",
                                 f"2. Inspect JSON response and observe undocumented sensitive key '{k}' (preview: {masked})."
@@ -1346,6 +1346,22 @@ class GraphGuidedScanner:
                 )
                 findings.append(f_undoc)
                 await self._confirm(on_event, f_undoc, f"API Inventory: Undocumented status codes: {', '.join(sorted(undoc_affected))}")
+
+        # Ensure no identity tokens appear in any finding's repro_curl or reproduction_steps
+        token_replacements = [
+            (getattr(admin_user, "token", None), "<ADMIN_TOKEN>"),
+            (getattr(user_b, "token", None), "<USER_B_TOKEN>"),
+            (getattr(user_a, "token", None), "<USER_A_TOKEN>"),
+        ]
+        for f in findings:
+            for tok, placeholder in token_replacements:
+                if tok and len(tok) >= 4:
+                    if f.repro_curl and tok in f.repro_curl:
+                        f.repro_curl = f.repro_curl.replace(tok, placeholder)
+                    if f.reproduction_steps:
+                        f.reproduction_steps = [s.replace(tok, placeholder) for s in f.reproduction_steps]
+            if f.repro_curl:
+                f.repro_curl = f.repro_curl.replace("<TOKEN>", "<USER_A_TOKEN>")
 
         unique: Dict[tuple, Finding] = {}  # one finding per category/method/endpoint/diff_fields
         for f in findings:

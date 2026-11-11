@@ -179,11 +179,14 @@ async def _execute_scan_task(scan_id: str, opts: ScanTriggerInput, queue: asynci
             identities = list((await AuthRegistry(profile).authenticate_all(client=client)).items())
             user_a = dict(identities).get("user_a") or identities[0][1]
             user_b = dict(identities).get("user_b") or identities[1][1]
+            admin_name = getattr(profile, "admin", "admin")
+            admin_user = dict(identities).get(admin_name) if admin_name else None
             await emit(_ev(scan_id, "log", f"[AUTH] Successfully acquired dynamic tokens for User A ({user_a.username}) and User B ({user_b.username})", "A"))
 
             executor = SafeExecutor(allowed_hosts={"127.0.0.1", "localhost"}, total_budget=opts.budget, enable_mutations=opts.enable_mutations)
             scanner = GraphGuidedScanner(executor, profile.base_url, target_profile=profile)
             findings = await scanner.run_scan(operations=operations, user_a=user_a, user_b=user_b,
+                                              admin_user=admin_user,
                                               enable_mutations=opts.enable_mutations, on_event=emit, client=client)
             for f in findings:
                 await save_finding(scan_id, f)
@@ -226,6 +229,42 @@ async def get_identities():
         for key, creds in DEFAULT_CREDENTIALS.items()
     ]
 
+class ShowcaseInput(BaseModel):
+    enabled: bool = True
+
+@app.post("/api/target/showcase")
+def toggle_target_showcase(payload: ShowcaseInput):
+    cfg = get_target_config()
+    if payload.enabled:
+        update_target_config(
+            defect_a=False,
+            defect_b=True,
+            defect_c=False,
+            defect_bfla=True,
+            defect_mass_assign=True,
+            defect_exposure=True,
+            defect_auth=True,
+            defect_misconfig=True,
+            patched_mode=cfg.patched_mode
+        )
+    else:
+        update_target_config(
+            defect_a=False,
+            defect_b=True,
+            defect_c=False,
+            defect_bfla=False,
+            defect_mass_assign=False,
+            defect_exposure=False,
+            defect_auth=False,
+            defect_misconfig=False,
+            patched_mode=cfg.patched_mode
+        )
+    return {
+        "status": "target_showcase_updated",
+        "showcase": payload.enabled,
+        "config": get_target_config().model_dump()
+    }
+
 @app.post("/api/target/reset")
 async def reset_target():
     reset_db()
@@ -236,6 +275,11 @@ async def reset_target():
         defect_a=cfg.defect_a,
         defect_b=cfg.defect_b,
         defect_c=cfg.defect_c,
+        defect_bfla=cfg.defect_bfla,
+        defect_mass_assign=cfg.defect_mass_assign,
+        defect_exposure=cfg.defect_exposure,
+        defect_auth=cfg.defect_auth,
+        defect_misconfig=cfg.defect_misconfig,
         patched_mode=False
     )
     return {"status": "target_reset_success", "patched_mode": False}
@@ -247,7 +291,12 @@ def get_target_status():
         "patched_mode": cfg.patched_mode,
         "defect_a": cfg.defect_a,
         "defect_b": cfg.defect_b,
-        "defect_c": cfg.defect_c
+        "defect_c": cfg.defect_c,
+        "defect_bfla": cfg.defect_bfla,
+        "defect_mass_assign": cfg.defect_mass_assign,
+        "defect_exposure": cfg.defect_exposure,
+        "defect_auth": cfg.defect_auth,
+        "defect_misconfig": cfg.defect_misconfig,
     }
 
 @app.get("/api/benchmark/latest")
@@ -286,6 +335,11 @@ def apply_target_reference_patch(payload: Optional[TargetPatchInput] = None):
         defect_a=cfg.defect_a,
         defect_b=cfg.defect_b,
         defect_c=cfg.defect_c,
+        defect_bfla=cfg.defect_bfla,
+        defect_mass_assign=cfg.defect_mass_assign,
+        defect_exposure=cfg.defect_exposure,
+        defect_auth=cfg.defect_auth,
+        defect_misconfig=cfg.defect_misconfig,
         patched_mode=patched
     )
     return {

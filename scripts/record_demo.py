@@ -42,7 +42,7 @@ async def run_scan(client: httpx.AsyncClient, patched: bool, mutations: bool) ->
     if patched:
         await client.post("/api/target/patch", json={"patched": True})
 
-    res = await client.post("/api/scan", json={"dry_run": False, "budget": 30, "enable_mutations": mutations})
+    res = await client.post("/api/scan", json={"dry_run": False, "budget": 60, "enable_mutations": mutations})
     scan_id = res.json()["scan_id"]
 
     stream = await client.get(f"/api/scan/{scan_id}/events")
@@ -56,6 +56,9 @@ async def main() -> None:
     refresh_current_graph()
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
+        # Enable showcase mode so all defect checks are active
+        await client.post("/api/target/showcase", json={"enabled": True})
+
         fixtures: dict = {
             "graph": (await client.get("/api/graph")).json(),
             "identities": (await client.get("/api/identities")).json(),
@@ -66,7 +69,7 @@ async def main() -> None:
         }
 
         for mutations in (False, True):
-            dry = await client.post("/api/scan/dry-run", json={"dry_run": True, "budget": 30, "enable_mutations": mutations})
+            dry = await client.post("/api/scan/dry-run", json={"dry_run": True, "budget": 60, "enable_mutations": mutations})
             fixtures["dryRun"][str(mutations).lower()] = dry.json()
 
         for patched in (False, True):
@@ -75,8 +78,9 @@ async def main() -> None:
                 fixtures["scans"][key] = await run_scan(client, patched, mutations)
                 print(f"{key}: {len(fixtures['scans'][key]['events'])} events, {len(fixtures['scans'][key]['findings'])} findings")
 
-        # Remediation for the finding the default scan produces
-        leak = fixtures["scans"]["vulnerable_safe"]["findings"][0]
+        # Remediation for the BOLA finding
+        bola_findings = [f for f in fixtures["scans"]["vulnerable_safe"]["findings"] if f.get("category") == "BOLA"]
+        leak = bola_findings[0] if bola_findings else fixtures["scans"]["vulnerable_safe"]["findings"][0]
         rem = await client.post("/api/remediate", json={
             "finding_id": leak["id"],
             "endpoint": leak["endpoint"],

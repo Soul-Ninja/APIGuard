@@ -149,8 +149,32 @@ export const demoClient = {
     return { status: 'target_reset_success' };
   },
 
-  async getTargetStatus(): Promise<{ patched_mode: boolean; defect_a: boolean; defect_b: boolean; defect_c: boolean }> {
-    return { patched_mode: patched, defect_a: false, defect_b: true, defect_c: false };
+  async toggleShowcase(enabled: boolean): Promise<{ status: string; showcase: boolean; config: any }> {
+    return { status: 'target_showcase_updated', showcase: enabled, config: {} };
+  },
+
+  async getTargetStatus(): Promise<{
+    patched_mode: boolean;
+    defect_a: boolean;
+    defect_b: boolean;
+    defect_c: boolean;
+    defect_bfla?: boolean;
+    defect_mass_assign?: boolean;
+    defect_exposure?: boolean;
+    defect_auth?: boolean;
+    defect_misconfig?: boolean;
+  }> {
+    return {
+      patched_mode: patched,
+      defect_a: false,
+      defect_b: true,
+      defect_c: false,
+      defect_bfla: true,
+      defect_mass_assign: true,
+      defect_exposure: true,
+      defect_auth: true,
+      defect_misconfig: true,
+    };
   },
 
   async getLatestBenchmark(): Promise<BenchmarkData> {

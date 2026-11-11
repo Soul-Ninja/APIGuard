@@ -29,6 +29,7 @@ def main():
     scan_parser.add_argument("--json", dest="json_path", default=None, help="Output path for JSON report")
     scan_parser.add_argument("--sarif", dest="sarif_path", default=None, help="Output path for SARIF report")
     scan_parser.add_argument("--markdown", dest="markdown_path", default=None, help="Output path for Markdown report")
+    scan_parser.add_argument("--showcase", action="store_true", help="Run showcase scan activating all defects on demo target")
     scan_parser.add_argument(
         "--fail-on",
         choices=["critical", "high", "medium", "low", "info", "none", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "NONE"],
@@ -47,7 +48,8 @@ def main():
             json_path=args.json_path,
             sarif_path=args.sarif_path,
             markdown_path=args.markdown_path,
-            fail_on=args.fail_on
+            fail_on=args.fail_on,
+            showcase=args.showcase
         ))
         sys.exit(code)
     else:
@@ -62,7 +64,8 @@ async def run_cli_scan(
     json_path: str = None,
     sarif_path: str = None,
     markdown_path: str = None,
-    fail_on: str = None
+    fail_on: str = None,
+    showcase: bool = False
 ) -> int:
     print("=" * 65)
     print("  APIGuard CLI Engine — Graph-Guided BOLA Scanner")
@@ -73,6 +76,12 @@ async def run_cli_scan(
     except Exception as e:
         print(f"[ERROR] Configuration error: {e}", file=sys.stderr)
         return 2
+
+    if showcase:
+        if not getattr(profile, "is_demo", False):
+            print("[ERROR] --showcase is only supported with the bundled demo profile", file=sys.stderr)
+            return 2
+        profile.request_budget = max(profile.request_budget, 100)
 
     if target_url:
         profile.base_url = target_url
@@ -280,7 +289,20 @@ async def run_cli_scan(
     print("\n[*] Initiating Dual-Token Graph Execution...")
     if profile.is_demo:
         reset_db()
-        update_target_config(defect_a=False, defect_b=True, defect_c=False, defect_bfla=False, patched_mode=False)
+        if showcase:
+            update_target_config(
+                defect_a=False,
+                defect_b=True,
+                defect_c=False,
+                defect_bfla=True,
+                defect_mass_assign=True,
+                defect_exposure=True,
+                defect_auth=True,
+                defect_misconfig=True,
+                patched_mode=False
+            )
+        else:
+            update_target_config(defect_a=False, defect_b=True, defect_c=False, defect_bfla=False, patched_mode=False)
 
     executor = SafeExecutor(allowed_hosts=set(profile.allowed_hosts), total_budget=profile.request_budget, enable_mutations=enable_mutations)
     scanner = GraphGuidedScanner(executor, target_url, target_profile=profile)
