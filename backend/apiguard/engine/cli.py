@@ -68,7 +68,7 @@ async def run_cli_scan(
     showcase: bool = False
 ) -> int:
     print("=" * 65)
-    print("  APIGuard CLI Engine — Graph-Guided BOLA Scanner")
+    print("  APIGuard — API Authorization Scanner")
     print("=" * 65)
 
     try:

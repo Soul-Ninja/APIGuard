@@ -154,3 +154,55 @@ async def test_tokens_never_in_findings_repro_curl():
         # Placeholder checks
         if "Bearer" in f.repro_curl:
             assert any(p in f.repro_curl for p in ["<USER_A_TOKEN>", "<USER_B_TOKEN>", "<ADMIN_TOKEN>", "<GARBAGE_TOKEN>", "<ALG_NONE_JWT>", "<ALTERED_SIGNATURE_JWT>", "<EXPIRED_TOKEN>"])
+
+
+@pytest.mark.asyncio
+async def test_dashboard_showcase_graph_and_scan_includes_bfla():
+    import json
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
+        # First ensure showcase is OFF
+        await client.post("/api/target/showcase", json={"enabled": False})
+        graph_off = (await client.get("/api/graph")).json()
+        assert not any("/admin/users" in n.get("label", "") or "getAdminUsers" in n.get("id", "") for n in graph_off["nodes"])
+
+        # Enable showcase
+        await client.post("/api/target/showcase", json={"enabled": True})
+        graph_on = (await client.get("/api/graph")).json()
+        assert any("/admin/users" in n.get("label", "") or "getAdminUsers" in n.get("id", "") for n in graph_on["nodes"])
+
+        # Trigger scan in dashboard
+        scan_res = await client.post("/api/scan", json={"dry_run": False, "budget": 60, "enable_mutations": False})
+        scan_id = scan_res.json()["scan_id"]
+
+        # Read SSE events until scan_completed
+        stream = await client.get(f"/api/scan/{scan_id}/events")
+        events = [json.loads(line[6:]) for line in stream.text.splitlines() if line.startswith("data: ")]
+        assert any(e.get("event_type") == "scan_completed" for e in events)
+
+        # Get findings
+        findings = (await client.get("/api/findings", params={"scan_id": scan_id})).json()
+        cats = {f.get("category") for f in findings if f.get("status") == "confirmed"}
+        assert "BOLA" in cats
+        assert "BFLA" in cats
+        assert "BOPLA" in cats
+        assert "AUTH" in cats
+        assert "MISCONFIG" in cats
+
+        # Patched showcase gives 0 confirmed active findings
+        await client.post("/api/target/patch", json={"patched": True})
+        patched_res = await client.post("/api/scan", json={"dry_run": False, "budget": 60, "enable_mutations": False})
+        patched_scan_id = patched_res.json()["scan_id"]
+        patched_stream = await client.get(f"/api/scan/{patched_scan_id}/events")
+        patched_events = [json.loads(line[6:]) for line in patched_stream.text.splitlines() if line.startswith("data: ")]
+        assert any(e.get("event_type") == "scan_completed" for e in patched_events)
+
+        patched_findings = (await client.get("/api/findings", params={"scan_id": patched_scan_id})).json()
+        active_confirmed = [
+            f for f in patched_findings
+            if f.get("status") == "confirmed" and f.get("category") not in ("MISCONFIG", "INVENTORY")
+        ]
+        assert len(active_confirmed) == 0
+
+        # Clean up
+        await client.post("/api/target/showcase", json={"enabled": False})
+        await client.post("/api/target/reset")

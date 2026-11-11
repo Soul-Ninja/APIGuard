@@ -19,20 +19,39 @@ from apiguard.engine.planner import TestPlanner
 from apiguard.engine.remediation import RemediationEngine
 from apiguard.engine.benchmark import run_benchmark
 from apiguard.engine.auth import AuthRegistry, DEFAULT_CREDENTIALS
-from apiguard.engine.target import load_target_profile
-from apiguard.engine.models import IdentityProfile, ScanEvent
+from apiguard.engine.target import load_target_profile, is_admin_operation
+from apiguard.engine.models import IdentityProfile, ScanEvent, Operation
 from apiguard.target.app import target_app
 from apiguard.target.data import reset_db
 from apiguard.target.config import update_target_config, get_target_config
 from apiguard.db import init_db, save_scan, save_scan_event, save_finding, get_findings, clear_db
 
+BFLA_ADMIN_OP = Operation(
+    id="getAdminUsers",
+    method="GET",
+    path="/admin/users",
+    operation_id="getAdminUsers",
+    tags=["admin"],
+    summary="List all registered tenant users (Admin only)",
+    documented_status_codes=["200", "403"],
+    response_schemas={"200": {}, "403": {}}
+)
+
 current_spec_yaml = DEMO_SPEC_YAML
 current_graph = ResourceGraph()
 
-def refresh_current_graph():
-    global current_graph
+def get_current_operations() -> list:
     parser = OpenAPIParser(current_spec_yaml)
     operations = parser.extract_operations()
+    cfg = get_target_config()
+    if cfg.defect_bfla:
+        if not any(op.operation_id == BFLA_ADMIN_OP.operation_id for op in operations):
+            operations.append(BFLA_ADMIN_OP)
+    return operations
+
+def refresh_current_graph():
+    global current_graph
+    operations = get_current_operations()
     current_graph = ResourceGraph()
     current_graph.build_from_operations(operations)
 
@@ -98,6 +117,7 @@ async def import_spec(file: Optional[UploadFile] = File(None), raw_spec: Optiona
 
 @app.get("/api/graph")
 def get_graph():
+    refresh_current_graph()
     return current_graph.to_dict()
 
 class ScanTriggerInput(BaseModel):
@@ -126,8 +146,8 @@ async def trigger_scan(opts: ScanTriggerInput):
 
 @app.post("/api/scan/dry-run")
 async def preview_dry_run(opts: ScanTriggerInput):
-    parser = OpenAPIParser(current_spec_yaml)
-    operations = parser.extract_operations()
+    refresh_current_graph()
+    operations = get_current_operations()
     planner = TestPlanner(current_graph, base_url="http://127.0.0.1:8000/target")
 
     user_a, user_b = (IdentityProfile(**{k: DEFAULT_CREDENTIALS[n][k] for k in ("identity_id", "username", "password", "role")},
@@ -151,6 +171,37 @@ async def preview_dry_run(opts: ScanTriggerInput):
                 "body_preview": s.json_body or {}
             })
 
+    admin_ops = [op for op in operations if is_admin_operation(op)]
+    if admin_ops and get_target_config().defect_bfla:
+        admin_creds = DEFAULT_CREDENTIALS.get("admin")
+        admin_ident = admin_creds["identity_id"] if admin_creds else "usr_admin_001"
+        for op in admin_ops:
+            url = f"http://127.0.0.1:8000/target{op.path}"
+            all_steps.append({
+                "step_id": f"step_bfla_ctrl_{op.operation_id}",
+                "operation_id": op.operation_id,
+                "method": op.method,
+                "url": url,
+                "identity": admin_ident,
+                "purpose": "control_admin",
+                "phase": "A",
+                "cleanup": False,
+                "headers": {"Authorization": "[REDACTED]"},
+                "body_preview": {}
+            })
+            all_steps.append({
+                "step_id": f"step_bfla_probe_{op.operation_id}",
+                "operation_id": op.operation_id,
+                "method": op.method,
+                "url": url,
+                "identity": user_b.identity_id,
+                "purpose": "probe_adversary",
+                "phase": "B",
+                "cleanup": False,
+                "headers": {"Authorization": "[REDACTED]"},
+                "body_preview": {}
+            })
+
     planned_steps = all_steps[:budget_allocated]
     return {
         "planned_steps": planned_steps,
@@ -172,7 +223,8 @@ async def _execute_scan_task(scan_id: str, opts: ScanTriggerInput, queue: asynci
 
     try:
         profile = load_target_profile(opts.target_profile or "targets/demo.yaml")
-        operations = OpenAPIParser(current_spec_yaml).extract_operations()
+        refresh_current_graph()
+        operations = get_current_operations()
 
         # in-process ASGI client talks to the mounted /target app without a socket
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000") as client:
@@ -183,7 +235,8 @@ async def _execute_scan_task(scan_id: str, opts: ScanTriggerInput, queue: asynci
             admin_user = dict(identities).get(admin_name) if admin_name else None
             await emit(_ev(scan_id, "log", f"[AUTH] Successfully acquired dynamic tokens for User A ({user_a.username}) and User B ({user_b.username})", "A"))
 
-            executor = SafeExecutor(allowed_hosts={"127.0.0.1", "localhost"}, total_budget=opts.budget, enable_mutations=opts.enable_mutations)
+            budget = max(opts.budget, 60) if get_target_config().defect_bfla else opts.budget
+            executor = SafeExecutor(allowed_hosts={"127.0.0.1", "localhost"}, total_budget=budget, enable_mutations=opts.enable_mutations)
             scanner = GraphGuidedScanner(executor, profile.base_url, target_profile=profile)
             findings = await scanner.run_scan(operations=operations, user_a=user_a, user_b=user_b,
                                               admin_user=admin_user,
@@ -259,6 +312,7 @@ def toggle_target_showcase(payload: ShowcaseInput):
             defect_misconfig=False,
             patched_mode=cfg.patched_mode
         )
+    refresh_current_graph()
     return {
         "status": "target_showcase_updated",
         "showcase": payload.enabled,
@@ -282,6 +336,7 @@ async def reset_target():
         defect_misconfig=cfg.defect_misconfig,
         patched_mode=False
     )
+    refresh_current_graph()
     return {"status": "target_reset_success", "patched_mode": False}
 
 @app.get("/api/target/status")
@@ -342,6 +397,7 @@ def apply_target_reference_patch(payload: Optional[TargetPatchInput] = None):
         defect_misconfig=cfg.defect_misconfig,
         patched_mode=patched
     )
+    refresh_current_graph()
     return {
         "status": "target_patch_updated",
         "patched_mode": patched,

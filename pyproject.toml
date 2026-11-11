@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apiguard-cli"
-version = "0.2.0"
-description = "Graph-guided API authorization scanner: finds BOLA/IDOR leaks with multi-identity differential testing."
+version = "0.3.0"
+description = "API authorization scanner: proves BOLA, BFLA, BOPLA, broken auth and misconfigurations (OWASP API Top 10) with two-user testing."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-keywords = ["security", "api", "bola", "idor", "owasp", "openapi", "dast"]
+keywords = ["security", "api", "bola", "idor", "bfla", "bopla", "owasp", "openapi", "dast", "sarif"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Security",
